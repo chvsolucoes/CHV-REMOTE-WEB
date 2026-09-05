@@ -10,7 +10,8 @@ const state={
   remoteW:0,remoteH:0,frameAt:0,fps:0,mbps:0,
   pointers:new Map(),gesture:null,longPressTimer:null,longPressFired:false,dragging:false,moved:false,
   cursor:{x:.5,y:.5},lastPointer:null,zoom:1,panX:0,panY:0,
-  keyboardComposing:false
+  keyboardComposing:false,edgeGesture:null,menuOpen:false,quickPasswordTarget:null,
+  modifiers:new Set(),ctrlHoldTimer:null,ctrlLong:false,fullscreenFallback:false,sharpTimer:null,lastFocusProbeAt:0
 };
 const settings=Object.assign({
   quality:'balanced',savePasswords:false,autoAudio:false,autoMic:false,pointerMode:'mouse'
@@ -205,6 +206,11 @@ function handleMessage(e,code,secret,timeout){
     if(o.type==='peer_status'&&(o.connected===false||o.online===false)){
       state.onlineCodes.delete(code);toast('Computador remoto desconectou');disconnect();return;
     }
+    if(['text_focus','editable_focus','input_focus'].includes(o.type)){
+      const editable=o.editable!==false&&o.focused!==false;
+      if(editable)openNativeKeyboard(o.numeric?'numeric':'text',true);
+      return;
+    }
     if(o.type==='file_offer'){acceptFile(o);return}
     if(o.type==='permission_denied')toast(o.message||'Ação bloqueada pelo computador remoto');
     return;
@@ -249,6 +255,12 @@ function sendMouse(action,p,extra={}){
 }
 function clickAt(p,button='left'){
   sendMouse('down',p,{button});sendMouse('up',p,{button});
+}
+function probeTextFocus(p){
+  if(!state.connected)return;
+  state.lastFocusProbeAt=Date.now();
+  // Hosts atualizados podem responder com {type:'text_focus', editable:true, numeric:false}.
+  wsSend({type:'text_focus_probe',x:p.x,y:p.y});
 }
 function sendKey(key,down){if(state.connected)wsSend({type:'input',kind:'key',key,down})}
 function tapKey(k){sendKey(k,true);sendKey(k,false)}
@@ -297,7 +309,7 @@ function audioPacket(u){
 function saveConnection(id,password){
   const now=new Date().toISOString();
   const old=history.find(x=>x.id===id);
-  history=[{id,date:now,password:settings.savePasswords?password:(old?.password||'')},...history.filter(x=>x.id!==id)].slice(0,30);
+  history=[{id,date:now,password:settings.savePasswords?password:''},...history.filter(x=>x.id!==id)].slice(0,30);
   store.set('history',history);
   const existing=favorites.find(x=>x.id===id);
   if(existing&&settings.savePasswords){existing.password=password;store.set('favorites',favorites)}
@@ -320,10 +332,33 @@ function rowStatus(id){
   if(!state.presenceKnown.has(id))return 'unknown';
   return state.onlineCodes.has(id)?'online':'offline';
 }
-function fillAndGo(id,password){
+function openPasswordSheet(id){
+  state.quickPasswordTarget=id;
+  $('#passwordSheetId').textContent='ID '+id;
+  $('#quickPassword').value='';
+  $('#passwordSheet').classList.remove('hidden');
+  setTimeout(()=>$('#quickPassword').focus(),120);
+}
+function closePasswordSheet(){
+  $('#passwordSheet').classList.add('hidden');state.quickPasswordTarget=null;$('#quickPassword').value='';
+}
+function prepareConnection(id,password=''){
   $('#remoteId').value=id;$('#remotePassword').value=password||'';
-  showView('homeView');updateConnectButton();renderCurrentPcStatus();
-  if(!password)$('#remotePassword').focus();
+  renderCurrentPcStatus();updateConnectButton();
+}
+async function connectSavedItem(item){
+  const id=cleanId(item.id),saved=(settings.savePasswords?(item.password||''):'');
+  if(id.length!==6)return;
+  if(state.presenceKnown.has(id)&&!state.onlineCodes.has(id))return toast('Computador offline');
+  if(saved.length>=4){
+    prepareConnection(id,saved);showView('sessionView');await connect();return;
+  }
+  prepareConnection(id,'');openPasswordSheet(id);
+}
+function quickPasswordConnect(){
+  const id=state.quickPasswordTarget,secret=$('#quickPassword').value;
+  if(!id||secret.length<4)return toast('Informe a senha do computador.');
+  prepareConnection(id,secret);closePasswordSheet();connect();
 }
 function listItem(item,kind){
   const id=item.id,password=item.password||'',date=item.date||'',fav=isFavorite(id),online=rowStatus(id);
@@ -332,8 +367,8 @@ function listItem(item,kind){
     <div class="info"><strong>ID ${id}</strong><small>${online==='online'?'Online':online==='offline'?'Offline':'Verificando…'}${date?' • '+new Date(date).toLocaleString('pt-BR'):''}</small></div>
     <div class="list-actions"><button class="star ${fav?'active':''}" aria-label="${fav?'Remover dos favoritos':'Adicionar aos favoritos'}">${fav?'★':'☆'}</button><button class="go">Conectar</button></div>`;
   el.querySelector('.star').onclick=e=>{e.stopPropagation();toggleFavorite(id,password)};
-  el.querySelector('.go').onclick=e=>{e.stopPropagation();fillAndGo(id,password)};
-  el.querySelector('.info').onclick=()=>fillAndGo(id,password);
+  el.querySelector('.go').onclick=e=>{e.stopPropagation();connectSavedItem({id,password,date})};
+  el.querySelector('.info').onclick=()=>connectSavedItem({id,password,date});
   if(kind==='favorite'&&!password)el.querySelector('.go').title='Informe a senha antes de conectar';
   return el;
 }
@@ -349,17 +384,19 @@ function disconnect(){
   try{state.ws?.close(1000)}catch{}
   state.ws=null;state.connected=false;
   $('#remoteScreen').removeAttribute('src');$('#screenPlaceholder').style.display='flex';
-  showView('homeView');setStatus('Pronto para conectar');resetViewTransform();updateConnectButton();refreshPresence();
+  closeEdgeMenu();closeAllSheets();releaseModifiers();
+  showView('homeView');setStatus('Pronto para conectar');resetViewTransform();setImmersive(false);updateConnectButton();refreshPresence();
 }
 
 function applyPointerMode(mode){
   settings.pointerMode=mode==='touch'?'touch':'mouse';store.set('settings',settings);
-  const mouse=settings.pointerMode==='mouse',wrap=$('#screenWrap'),btn=$('#modeBtn');
+  const mouse=settings.pointerMode==='mouse',wrap=$('#screenWrap'),btn=$('#menuModeBtn');
   wrap.classList.toggle('mouse-mode',mouse);
   $('#controlBadge').textContent=mouse?'Mouse':'Touch Screen';
-  btn.innerHTML=mouse?'➤<span>Mouse</span>':'☝<span>Touch</span>';
-  btn.classList.toggle('active',!mouse);
-  $('#pointerMode').value=settings.pointerMode;updateCursorVisual();
+  if(btn){btn.innerHTML=mouse?'➤<small>Mouse</small>':'☝<small>Touch</small>';btn.classList.toggle('active',!mouse)}
+  $('#pointerMode').value=settings.pointerMode;
+  $('#sessionMouseBtn')?.classList.toggle('active',mouse);$('#sessionTouchBtn')?.classList.toggle('active',!mouse);
+  updateCursorVisual();
 }
 function updateCursorVisual(){
   if(settings.pointerMode!=='mouse')return;
@@ -375,7 +412,7 @@ function startLongPress(p){
   state.longPressTimer=setTimeout(()=>{
     state.longPressFired=true;
     const target=settings.pointerMode==='mouse'?state.cursor:p;
-    clickAt(target,'right');toast('Clique direito');
+    clickAt(target,'right');try{navigator.vibrate?.(18)}catch{};toast('Clique direito');
   },620);
 }
 function resetGestureFlags(){
@@ -383,6 +420,11 @@ function resetGestureFlags(){
 }
 function pointerDown(e){
   if(!state.connected)return;
+  if(e.target.closest?.('button,.edge-menu,.edge-submenu'))return;
+  const wr=$('#screenWrap').getBoundingClientRect();
+  if(e.clientX-wr.left<=24){
+    e.preventDefault();state.edgeGesture={id:e.pointerId,startX:e.clientX,startY:e.clientY};return;
+  }
   e.preventDefault();$('#screenWrap').setPointerCapture?.(e.pointerId);
   state.pointers.set(e.pointerId,{x:e.clientX,y:e.clientY,startX:e.clientX,startY:e.clientY,time:performance.now()});
   if(state.pointers.size===2){
@@ -394,6 +436,11 @@ function pointerDown(e){
   startLongPress(p);
 }
 function pointerMove(e){
+  if(state.edgeGesture&&state.edgeGesture.id===e.pointerId){
+    e.preventDefault();
+    if(e.clientX-state.edgeGesture.startX>42){openEdgeMenu();state.edgeGesture=null}
+    return;
+  }
   const ptr=state.pointers.get(e.pointerId);if(!ptr)return;
   e.preventDefault();
   const prev={x:ptr.x,y:ptr.y};ptr.x=e.clientX;ptr.y=e.clientY;
@@ -418,6 +465,7 @@ function pointerMove(e){
   }
 }
 function pointerUp(e){
+  if(state.edgeGesture&&state.edgeGesture.id===e.pointerId){state.edgeGesture=null;return}
   const ptr=state.pointers.get(e.pointerId);if(!ptr)return;
   e.preventDefault();clearLongPress();
   const wasMulti=state.pointers.size>1;
@@ -425,14 +473,15 @@ function pointerUp(e){
   if(wasMulti){if(state.pointers.size<2)state.gesture=null;return}
   if(state.longPressFired){resetGestureFlags();return}
   if(settings.pointerMode==='mouse'){
-    if(!state.moved)clickAt(state.cursor,'left');
+    if(!state.moved){clickAt(state.cursor,'left');probeTextFocus(state.cursor)}
   }else{
     const p=normalizedPoint(e.clientX,e.clientY);
-    if(state.dragging)sendMouse('up',p,{button:'left'});else if(!state.moved)clickAt(p,'left');
+    if(state.dragging)sendMouse('up',p,{button:'left'});else if(!state.moved){clickAt(p,'left');probeTextFocus(p)}
   }
   resetGestureFlags();
 }
 function pointerCancel(e){
+  if(state.edgeGesture&&state.edgeGesture.id===e.pointerId){state.edgeGesture=null;return}
   const ptr=state.pointers.get(e.pointerId);
   if(ptr&&state.dragging&&settings.pointerMode==='touch'){
     sendMouse('up',normalizedPoint(ptr.x,ptr.y),{button:'left'});
@@ -452,7 +501,7 @@ function handlePinch(){
   state.zoom=Math.max(1,Math.min(4,state.gesture.zoom*(d/Math.max(1,state.gesture.distance))));
   state.panX=state.gesture.panX+(cx-state.gesture.cx);
   state.panY=state.gesture.panY+(cy-state.gesture.cy);
-  applyTransform();
+  applyTransform();requestSharpFrame();
 }
 function applyTransform(){
   const vp=$('#screenViewport');
@@ -470,12 +519,26 @@ function wheel(e){
   sendMouse('scroll',p,{dx:Math.trunc(e.deltaX),dy:Math.trunc(e.deltaY)});
 }
 
-function openNativeKeyboard(){
+function requestSharpFrame(){
+  clearTimeout(state.sharpTimer);
+  state.sharpTimer=setTimeout(()=>{
+    if(!state.connected)return;
+    let w=1600,h=900;
+    if(settings.quality==='speed'){w=1280;h=720}
+    if(settings.quality==='quality'){w=2560;h=1440}
+    if(state.zoom>=1.45){w=Math.max(w,2560);h=Math.max(h,1440)}
+    if(state.zoom>=2.6){w=Math.max(w,3840);h=Math.max(h,2160)}
+    wsSend({type:'screen_profile',width:w,height:h,fit:false,reason:'zoom'});
+  },180);
+}
+function openNativeKeyboard(mode='text',automatic=false){
   if(!state.connected)return;
+  $('#keyboardSheet').classList.add('hidden');
   const input=$('#nativeKeyboardInput');
-  input.value='';input.focus({preventScroll:true});
-  try{input.setSelectionRange(0,0)}catch{}
-  toast('Teclado do celular ativado');
+  input.blur();input.value='';input.setAttribute('inputmode',mode==='numeric'?'numeric':'text');
+  // Quando vem de um toque/botão, foco síncrono faz o iOS abrir o teclado nativo.
+  // Quando vem de text_focus do host, tentamos imediatamente; navegadores podem exigir gesto recente.
+  input.focus({preventScroll:true});try{input.setSelectionRange(0,0)}catch{}
 }
 function nativeBeforeInput(e){
   if(state.keyboardComposing)return;
@@ -488,18 +551,49 @@ function nativeKeyDown(e){
   if(map[e.key]){e.preventDefault();tapKey(map[e.key])}
 }
 function nativeCompositionEnd(e){state.keyboardComposing=false;if(e.data)typeText(e.data);e.target.value=''}
+function setImmersive(on){
+  state.fullscreenFallback=!!on;
+  $('#sessionView').classList.toggle('immersive',!!on);document.body.classList.toggle('session-immersive',!!on);
+  $('#menuFullscreenBtn')?.classList.toggle('active',!!on);$('#sessionFullscreenBtn').textContent=on?'⛶ Sair da tela cheia':'⛶ Tela cheia';
+  setTimeout(()=>{resetViewTransform();requestSharpFrame()},80);
+}
 async function toggleFullscreen(){
-  const target=$('#sessionView');
-  try{
-    if(document.fullscreenElement||document.webkitFullscreenElement){
-      (document.exitFullscreen||document.webkitExitFullscreen)?.call(document);
-      target.classList.remove('compact');return;
-    }
-    const req=target.requestFullscreen||target.webkitRequestFullscreen;
-    if(req){await req.call(target);return}
-  }catch{}
-  target.classList.toggle('compact');
-  $('#fullscreenBtn').classList.toggle('active',target.classList.contains('compact'));
+  const on=!!(document.fullscreenElement||document.webkitFullscreenElement||state.fullscreenFallback);
+  if(on){
+    try{if(document.fullscreenElement)await document.exitFullscreen();else if(document.webkitFullscreenElement)await document.webkitExitFullscreen?.()}catch{}
+    setImmersive(false);return;
+  }
+  setImmersive(true);
+  const target=document.documentElement,req=target.requestFullscreen||target.webkitRequestFullscreen;
+  if(req){
+    try{await req.call(target,{navigationUI:'hide'})}catch{}
+  }
+  try{await screen.orientation?.lock?.('landscape')}catch{}
+}
+function captureRemoteScreen(){
+  const img=$('#remoteScreen');if(!img.src)return toast('Ainda não há imagem para capturar.');
+  try{const a=document.createElement('a');a.href=img.src;a.download='CHV-Remote-'+Date.now()+'.jpg';document.body.appendChild(a);a.click();a.remove();toast('Captura de tela salva')}catch{toast('Não foi possível salvar a captura')}
+}
+function openEdgeMenu(){state.menuOpen=true;$('#edgeMenu').classList.remove('hidden');$('#edgeHandle').classList.add('hidden')}
+function closeEdgeMenu(){state.menuOpen=false;$('#edgeMenu')?.classList.add('hidden');$('#quickActionsMenu')?.classList.add('hidden');$('#edgeHandle')?.classList.remove('hidden')}
+function toggleEdgeMenu(){state.menuOpen?closeEdgeMenu():openEdgeMenu()}
+function closeAllSheets(){$$('.sheet').forEach(x=>x.classList.add('hidden'))}
+function openSheet(id){closeEdgeMenu();closeAllSheets();$('#'+id).classList.remove('hidden')}
+function releaseModifiers(){
+  for(const key of state.modifiers){if(key==='altgr'){sendKey('alt',false);sendKey('ctrl',false)}else sendKey(key,false)}state.modifiers.clear();
+  $$('[data-modifier]').forEach(b=>b.classList.remove('active'));
+}
+function toggleModifier(key,button){
+  if(key==='altgr'){
+    if(state.modifiers.has(key)){sendKey('alt',false);sendKey('ctrl',false);state.modifiers.delete(key);button.classList.remove('active')}
+    else{sendKey('ctrl',true);sendKey('alt',true);state.modifiers.add(key);button.classList.add('active')}
+    return;
+  }
+  if(state.modifiers.has(key)){sendKey(key,false);state.modifiers.delete(key);button.classList.remove('active')}
+  else{sendKey(key,true);state.modifiers.add(key);button.classList.add('active')}
+}
+function chord(key){
+  const ctrlWas=state.modifiers.has('ctrl');if(!ctrlWas)sendKey('ctrl',true);tapKey(key);if(!ctrlWas)sendKey('ctrl',false);
 }
 function acceptFile(o){
   if(!state.canAdmin||!o.id)return;
@@ -541,34 +635,71 @@ $('#backSession').onclick=disconnect;$('#disconnectBtn').onclick=disconnect;
 $('#hideInstall').onclick=()=>{$('#installCard').style.display='none';store.set('hideInstall',true)};
 $('#clearQuick').onclick=()=>{history=[];store.set('history',history);renderLists();refreshPresence()};
 $('#clearFavorites').onclick=()=>{favorites=[];store.set('favorites',favorites);renderLists();refreshPresence()};
+
 $('#quality').value=settings.quality;$('#savePasswords').checked=settings.savePasswords;
 $('#autoAudio').checked=settings.autoAudio;$('#autoMic').checked=settings.autoMic;$('#pointerMode').value=settings.pointerMode;
-['quality','savePasswords','autoAudio','autoMic'].forEach(id=>$('#'+id).onchange=e=>{
+$('#sessionQuality').value=settings.quality;
+['quality','autoAudio','autoMic'].forEach(id=>$('#'+id).onchange=e=>{
   settings[id]=e.target.type==='checkbox'?e.target.checked:e.target.value;store.set('settings',settings);
+  if(id==='quality'){$('#sessionQuality').value=settings.quality;requestSharpFrame()}
 });
+$('#savePasswords').onchange=e=>{
+  settings.savePasswords=e.target.checked;store.set('settings',settings);
+  if(!settings.savePasswords){
+    history=history.map(x=>({...x,password:''}));favorites=favorites.map(x=>({...x,password:''}));
+    store.set('history',history);store.set('favorites',favorites);renderLists();
+  }
+};
 $('#pointerMode').onchange=e=>applyPointerMode(e.target.value);
-$('#modeBtn').onclick=()=>applyPointerMode(settings.pointerMode==='mouse'?'touch':'mouse');
-$('#keyboardBtn').onclick=openNativeKeyboard;
-$('#cadBtn').onclick=sendCtrlAltDel;
-$('#fileBtn').onclick=()=>$('#fileInput').click();$('#fileInput').onchange=e=>sendFiles([...e.target.files]);
-$('#audioBtn').onclick=async e=>{await ensureAudio();const on=!e.currentTarget.classList.contains('active');if(setFeature('system_audio',on))e.currentTarget.classList.toggle('active',on)};
-$('#micBtn').onclick=async e=>{await ensureAudio();const on=!e.currentTarget.classList.contains('active');if(setFeature('microphone',on))e.currentTarget.classList.toggle('active',on)};
-$('#fullscreenBtn').onclick=toggleFullscreen;
+$('#sessionQuality').onchange=e=>{settings.quality=e.target.value;$('#quality').value=settings.quality;store.set('settings',settings);requestSharpFrame()};
+$('#sessionMouseBtn').onclick=()=>applyPointerMode('mouse');$('#sessionTouchBtn').onclick=()=>applyPointerMode('touch');
+
+// Acesso rápido: conecta direto com senha salva; sem senha, pede somente a senha.
+$('#closePasswordSheet').onclick=closePasswordSheet;
+$('#showQuickPassword').onclick=()=>{$('#quickPassword').type=$('#quickPassword').type==='password'?'text':'password'};
+$('#quickConnectBtn').onclick=quickPasswordConnect;$('#quickPassword').addEventListener('keydown',e=>{if(e.key==='Enter')quickPasswordConnect()});
+
+// Menu lateral estilo CHV: toque na alça ou arraste da borda esquerda para dentro.
+$('#edgeHandle').onclick=e=>{e.stopPropagation();toggleEdgeMenu()};$('#menuCloseBtn').onclick=closeEdgeMenu;
+$('#sessionSettingsBtn').onclick=()=>openSheet('sessionSettingsSheet');
+$('#menuModeBtn').onclick=()=>applyPointerMode(settings.pointerMode==='mouse'?'touch':'mouse');
+$('#menuKeyboardBtn').onclick=()=>openSheet('keyboardSheet');
+$('#menuFilesBtn').onclick=()=>{$('#fileInput').click();closeEdgeMenu()};
+$('#quickActionsBtn').onclick=e=>{e.stopPropagation();$('#quickActionsMenu').classList.toggle('hidden')};
+$('#menuFullscreenBtn').onclick=()=>{closeEdgeMenu();toggleFullscreen()};
+$('#menuDisconnectBtn').onclick=disconnect;
+$('#actionCadBtn').onclick=sendCtrlAltDel;$('#actionScreenshotBtn').onclick=captureRemoteScreen;
+$('#actionAudioBtn').onclick=async e=>{await ensureAudio();const on=!e.currentTarget.classList.contains('active');if(setFeature('system_audio',on))e.currentTarget.classList.toggle('active',on)};
+$('#actionMicBtn').onclick=async e=>{await ensureAudio();const on=!e.currentTarget.classList.contains('active');if(setFeature('microphone',on))e.currentTarget.classList.toggle('active',on)};
+$('#sessionFullscreenBtn').onclick=()=>{closeAllSheets();toggleFullscreen()};
+$$('[data-close-sheet]').forEach(b=>b.onclick=()=>$('#'+b.dataset.closeSheet).classList.add('hidden'));
+$$('.sheet').forEach(sh=>sh.addEventListener('pointerdown',e=>{if(e.target===sh)sh.classList.add('hidden')}));
+
+// Teclado nativo + teclado especial completo.
+$('#nativeKeyboardBtn').onclick=()=>openNativeKeyboard('text');$('#numericKeyboardBtn').onclick=()=>openNativeKeyboard('numeric');$('#keyboardCadBtn').onclick=sendCtrlAltDel;
+$$('#specialKeyboard [data-key]').forEach(b=>b.onclick=()=>tapKey(b.dataset.key));
+$$('#specialKeyboard [data-modifier]').forEach(b=>b.onclick=()=>{if(b===ctrlKeyBtn&&state.ctrlLong){state.ctrlLong=false;return}toggleModifier(b.dataset.modifier,b)});
+const ctrlKeyBtn=$('#ctrlKeyBtn');
+ctrlKeyBtn.addEventListener('pointerdown',()=>{state.ctrlLong=false;clearTimeout(state.ctrlHoldTimer);state.ctrlHoldTimer=setTimeout(()=>{state.ctrlLong=true;$('#ctrlShortcutMenu').classList.remove('hidden');try{navigator.vibrate?.(15)}catch{}},520)});
+ctrlKeyBtn.addEventListener('pointerup',()=>clearTimeout(state.ctrlHoldTimer));ctrlKeyBtn.addEventListener('pointercancel',()=>clearTimeout(state.ctrlHoldTimer));
+$$('[data-chord]').forEach(b=>b.onclick=()=>{chord(b.dataset.chord);$('#ctrlShortcutMenu').classList.add('hidden')});
+
+$('#fileInput').onchange=e=>{sendFiles([...e.target.files]);e.target.value=''};
 const sw=$('#screenWrap');
-sw.addEventListener('pointerdown',pointerDown,{passive:false});
-sw.addEventListener('pointermove',pointerMove,{passive:false});
-sw.addEventListener('pointerup',pointerUp,{passive:false});
-sw.addEventListener('pointercancel',pointerCancel,{passive:false});
-sw.addEventListener('wheel',wheel,{passive:false});
-sw.addEventListener('contextmenu',e=>e.preventDefault());
-const nki=$('#nativeKeyboardInput');
-nki.addEventListener('beforeinput',nativeBeforeInput);
-nki.addEventListener('keydown',nativeKeyDown);
-nki.addEventListener('compositionstart',()=>state.keyboardComposing=true);
-nki.addEventListener('compositionend',nativeCompositionEnd);
-document.addEventListener('fullscreenchange',()=>$('#fullscreenBtn').classList.toggle('active',!!document.fullscreenElement));
+sw.addEventListener('pointerdown',pointerDown,{passive:false});sw.addEventListener('pointermove',pointerMove,{passive:false});sw.addEventListener('pointerup',pointerUp,{passive:false});sw.addEventListener('pointercancel',pointerCancel,{passive:false});sw.addEventListener('wheel',wheel,{passive:false});sw.addEventListener('contextmenu',e=>e.preventDefault());
+const nki=$('#nativeKeyboardInput');nki.addEventListener('beforeinput',nativeBeforeInput);nki.addEventListener('keydown',nativeKeyDown);nki.addEventListener('compositionstart',()=>state.keyboardComposing=true);nki.addEventListener('compositionend',nativeCompositionEnd);
+
+function fullscreenChanged(){
+  const native=!!(document.fullscreenElement||document.webkitFullscreenElement);
+  if(!native&&state.fullscreenFallback&&document.visibilityState==='visible'){
+    // iOS/PWA usa nosso modo imersivo mesmo sem Fullscreen API.
+    setImmersive(true);
+  }
+}
+document.addEventListener('fullscreenchange',fullscreenChanged);document.addEventListener('webkitfullscreenchange',fullscreenChanged);
 window.addEventListener('resize',()=>requestAnimationFrame(updateCursorVisual));
-window.addEventListener('pagehide',()=>{try{state.ws?.close()}catch{}});
+window.addEventListener('orientationchange',()=>setTimeout(()=>{resetViewTransform();requestSharpFrame()},160));
+window.addEventListener('pagehide',()=>{releaseModifiers();try{state.ws?.close()}catch{}});
 if('serviceWorker'in navigator)window.addEventListener('load',()=>navigator.serviceWorker.register('sw.js').catch(()=>{}));
 if(store.get('hideInstall',false))$('#installCard').style.display='none';
 

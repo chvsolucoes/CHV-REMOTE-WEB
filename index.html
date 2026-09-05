@@ -6,6 +6,7 @@
   <meta name="theme-color" content="#0b1f33">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="format-detection" content="telephone=no">
   <meta name="apple-mobile-web-app-title" content="CHV Remote">
   <meta name="mobile-web-app-capable" content="yes">
   <title>CHV Remote</title>
@@ -69,7 +70,7 @@
             <select id="pointerMode"><option value="mouse">Mouse</option><option value="touch">Touch Screen</option></select>
           </div>
         </div>
-        <div class="card about"><strong>CHV Remote Web App</strong><p>Versão PWA 2.1.0 • conexão via CHV Relay • presença dos computadores em tempo real.</p></div>
+        <div class="card about"><strong>CHV Remote Web App</strong><p>Versão PWA 2.2.0 • conexão via CHV Relay • controle móvel otimizado.</p></div>
       </section>
 
       <section id="sessionView" class="view session-view">
@@ -83,22 +84,34 @@
           <div id="screenViewport" class="screen-viewport">
             <img id="remoteScreen" draggable="false" alt="Tela remota">
           </div>
-          <div id="mouseCursor" class="remote-cursor" aria-hidden="true">➤</div>
+          <div id="mouseCursor" class="remote-cursor" aria-hidden="true">
+            <svg viewBox="0 0 32 42" aria-hidden="true"><path d="M3 2 L3 32 L11 24 L17 39 L23 36 L17 22 L29 22 Z"/></svg>
+          </div>
           <div id="screenPlaceholder"><div class="spinner"></div><span>Aguardando imagem do computador…</span></div>
           <div class="metrics"><span id="fpsMetric">0 FPS</span><span id="mbpsMetric">0 Mbps</span></div>
           <div id="zoomBadge" class="zoom-badge hidden">100%</div>
           <div id="controlBadge" class="control-badge">Mouse</div>
+
+          <button id="edgeHandle" class="edge-handle" aria-label="Abrir menu da sessão"><span></span></button>
+          <div id="edgeMenu" class="edge-menu hidden" aria-label="Menu da sessão">
+            <button id="menuCloseBtn" class="edge-bubble danger" aria-label="Fechar menu">×<small>Fechar</small></button>
+            <button id="sessionSettingsBtn" class="edge-bubble" aria-label="Configurações da sessão">⚙<small>Sessão</small></button>
+            <button id="menuModeBtn" class="edge-bubble" aria-label="Mouse ou Touch Screen">➤<small>Mouse</small></button>
+            <button id="menuKeyboardBtn" class="edge-bubble" aria-label="Teclado">⌨<small>Teclado</small></button>
+            <button id="menuFilesBtn" class="edge-bubble" aria-label="Arquivos">↥<small>Arquivos</small></button>
+            <button id="quickActionsBtn" class="edge-bubble accent" aria-label="Ações rápidas">⚡<small>Ações</small></button>
+            <button id="menuFullscreenBtn" class="edge-bubble" aria-label="Tela cheia">⛶<small>Tela cheia</small></button>
+            <button id="menuDisconnectBtn" class="edge-bubble danger" aria-label="Finalizar sessão">↪<small>Sair</small></button>
+          </div>
+
+          <div id="quickActionsMenu" class="edge-submenu hidden">
+            <button id="actionCadBtn" class="edge-bubble">⌘<small>Ctrl Alt Del</small></button>
+            <button id="actionScreenshotBtn" class="edge-bubble">◉<small>Captura</small></button>
+            <button id="actionAudioBtn" class="edge-bubble">♫<small>Áudio</small></button>
+            <button id="actionMicBtn" class="edge-bubble">●<small>Microfone</small></button>
+          </div>
         </div>
 
-        <div class="toolbar">
-          <button id="modeBtn">➤<span>Mouse</span></button>
-          <button id="keyboardBtn">⌨<span>Teclado</span></button>
-          <button id="cadBtn">⌘<span>Ctrl Alt Del</span></button>
-          <button id="fileBtn">↥<span>Arquivos</span></button>
-          <button id="audioBtn">♫<span>Áudio</span></button>
-          <button id="micBtn">◉<span>Microfone</span></button>
-          <button id="fullscreenBtn">⛶<span>Tela cheia</span></button>
-        </div>
         <input id="fileInput" type="file" hidden multiple>
         <input id="nativeKeyboardInput" class="native-keyboard-input" type="text" autocomplete="off" autocorrect="off" autocapitalize="none" spellcheck="false" aria-label="Teclado remoto">
       </section>
@@ -109,6 +122,52 @@
       <button data-view="favoritesView"><span>★</span>Favoritos</button>
       <button data-view="settingsView"><span>⚙</span>Ajustes</button>
     </nav>
+
+    <div id="passwordSheet" class="sheet hidden">
+      <div class="sheet-card password-sheet-card">
+        <div class="sheet-head"><div><strong>Senha do computador</strong><small id="passwordSheetId">ID</small></div><button id="closePasswordSheet">Fechar</button></div>
+        <label>Senha</label>
+        <div class="password-row"><input id="quickPassword" type="password" maxlength="64" autocomplete="off" placeholder="Senha do CHV Remote"><button id="showQuickPassword" class="ghost" aria-label="Mostrar senha">◉</button></div>
+        <button id="quickConnectBtn" class="primary">Conectar</button>
+      </div>
+    </div>
+
+    <div id="sessionSettingsSheet" class="sheet hidden">
+      <div class="sheet-card">
+        <div class="sheet-head"><strong>Configurações da sessão</strong><button data-close-sheet="sessionSettingsSheet">Fechar</button></div>
+        <div class="session-setting-row"><span>Controle</span><div class="segmented"><button id="sessionMouseBtn" class="active">Mouse</button><button id="sessionTouchBtn">Touch</button></div></div>
+        <div class="session-setting-row"><span>Qualidade</span><select id="sessionQuality"><option value="balanced">Equilibrada</option><option value="quality">Alta qualidade</option><option value="speed">Velocidade</option></select></div>
+        <button id="sessionFullscreenBtn" class="sheet-action">⛶ Tela cheia</button>
+      </div>
+    </div>
+
+    <div id="keyboardSheet" class="sheet keyboard-sheet hidden">
+      <div class="sheet-card keyboard-card">
+        <div class="sheet-head"><strong>Teclado remoto</strong><button data-close-sheet="keyboardSheet">Fechar</button></div>
+        <div class="keyboard-top-actions">
+          <button id="nativeKeyboardBtn" class="sheet-action">⌨ Teclado do celular</button>
+          <button id="numericKeyboardBtn" class="sheet-action">123 Números</button>
+          <button id="keyboardCadBtn" class="sheet-action danger-lite">Ctrl + Alt + Del</button>
+        </div>
+        <div id="specialKeyboard" class="special-keyboard">
+          <div class="key-row function-row">
+            <button data-key="escape">Esc</button><button data-key="f1">F1</button><button data-key="f2">F2</button><button data-key="f3">F3</button><button data-key="f4">F4</button><button data-key="f5">F5</button><button data-key="f6">F6</button>
+          </div>
+          <div class="key-row function-row">
+            <button data-key="f7">F7</button><button data-key="f8">F8</button><button data-key="f9">F9</button><button data-key="f10">F10</button><button data-key="f11">F11</button><button data-key="f12">F12</button><button data-key="backspace">⌫</button>
+          </div>
+          <div class="key-grid">
+            <button data-key="tab">Tab</button><button data-key="enter">Enter</button><button data-key="insert">Ins</button><button data-key="home">Home</button><button data-key="page up">PgUp</button>
+            <button data-key="delete">Del</button><button data-key="end">End</button><button data-key="page down">PgDn</button><button data-key="print screen">PrtSc</button><button data-key="scroll lock">ScrLk</button><button data-key="num lock">NumLk</button>
+          </div>
+          <div class="key-row arrows-row"><span></span><button data-key="up">↑</button><span></span><button data-key="left">←</button><button data-key="down">↓</button><button data-key="right">→</button></div>
+          <div class="modifier-row">
+            <button id="ctrlKeyBtn" data-modifier="ctrl">Ctrl</button><button data-modifier="shift">Shift</button><button data-modifier="alt">Alt</button><button data-modifier="cmd">Win</button><button data-modifier="altgr">Alt Gr</button>
+          </div>
+          <div id="ctrlShortcutMenu" class="ctrl-shortcuts hidden"><button data-chord="c">Copiar</button><button data-chord="v">Colar</button><button data-chord="x">Recortar</button></div>
+        </div>
+      </div>
+    </div>
 
     <div id="toast" class="toast hidden"></div>
   </div>

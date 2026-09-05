@@ -70,7 +70,7 @@
             <select id="pointerMode"><option value="mouse">Mouse</option><option value="touch">Touch Screen</option></select>
           </div>
         </div>
-        <div class="card about"><strong>CHV Remote Web App</strong><p>Versão PWA 2.7.0 • conexão via CHV Relay • controle móvel otimizado.</p></div>
+        <div class="card about"><strong>CHV Remote Web App</strong><p>Versão PWA 3.0.0 • conexão via CHV Relay • teclado e transferências móveis otimizados.</p></div>
       </section>
 
       <section id="sessionView" class="view session-view">
@@ -175,6 +175,14 @@
         <div class="file-browser-toolbar"><button id="remoteUpBtn" class="secondary">↑ Voltar</button><div id="remotePath" class="remote-path">Este PC</div><button id="refreshRemoteFilesBtn" class="secondary">↻</button></div>
         <div id="remoteFileList" class="remote-file-list"><div class="file-loading">Carregando…</div></div>
         <div class="file-browser-actions"><button id="sendFromPhoneBtn" class="sheet-action">↥ Enviar do celular</button><button id="receiveSelectedBtn" class="sheet-action" disabled>↧ Receber selecionado</button></div>
+      </div>
+    </div>
+
+    <div id="sentFileSheet" class="sheet hidden">
+      <div class="sheet-card sent-file-card">
+        <div class="sheet-head"><div><strong>Arquivo enviado</strong><small id="sentFileName">CHV Remote</small></div></div>
+        <p>Transferência concluída. O arquivo foi enviado para <b>Downloads / CHV Remote</b> no computador remoto.</p>
+        <div class="sent-file-actions"><button id="closeSentFileBtn" class="secondary">OK</button><button id="openSentFolderBtn" class="primary">Abrir pasta no PC</button></div>
       </div>
     </div>
 

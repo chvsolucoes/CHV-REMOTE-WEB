@@ -226,3 +226,9 @@ body.session-active #screenWrap{touch-action:none!important;cursor:default!impor
 .remote-cursor[data-shape^="size_"]{width:34px;height:34px;transform:translate(-17px,-17px)}
 .remote-cursor[data-shape="cross"]{width:32px;height:32px;transform:translate(-16px,-16px)}
 .remote-cursor[data-shape="arrow"]{width:30px;height:40px;transform:translate(-3px,-3px)}
+
+/* CHV Remote Web 3.0 keyboard viewport */
+.session-view.keyboard-visible{inset:var(--keyboard-top,0px) 0 auto;height:var(--keyboard-vh,100dvh)!important;min-height:var(--keyboard-vh,100dvh)!important}
+.session-view.keyboard-visible .screen-wrap{height:calc(var(--keyboard-vh,100dvh) - 58px)!important}
+.sent-file-card p{font-size:14px;line-height:1.5;color:var(--muted);margin:4px 0 14px}
+.sent-file-actions{display:flex;gap:10px}.sent-file-actions .secondary,.sent-file-actions .primary{flex:1;margin-top:0}

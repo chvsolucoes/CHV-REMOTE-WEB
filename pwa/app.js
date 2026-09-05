@@ -268,6 +268,7 @@ function handleMessage(e,code,secret,timeout){
     }
     if(o.type==='cursor_state'){applyCursorState(o);return}
     if(o.type==='secure_attention_result'){toast(o.ok?'Ctrl + Alt + Del executado':'Não foi possível executar Ctrl + Alt + Del neste computador');postInputRefresh('secure_attention_result');return}
+    if(o.type==='reveal_received_folder_result'){toast(o.ok?'Pasta CHV Remote aberta no computador':'Não foi possível abrir a pasta no computador');return}
     if(o.type==='file_list'){renderRemoteFileList(o);return}
     if(o.type==='file_list_error'){toast('Não foi possível abrir essa pasta no computador');return}
     if(o.type==='file_offer'){acceptFile(o);return}
@@ -362,15 +363,37 @@ function armKeyboardProbe(numeric=false){
     state.keyboardProbeArmed=false;try{input.blur()}catch{}
   },850);
 }
+function syncKeyboardViewport(){
+  const session=$('#sessionView'),vv=window.visualViewport;
+  if(!session||!vv)return false;
+  const covered=Math.max(0,window.innerHeight-(vv.height+vv.offsetTop));
+  const open=covered>110||vv.height<window.innerHeight*.78;
+  session.classList.toggle('keyboard-visible',open);
+  if(open){
+    session.style.setProperty('--keyboard-vh',Math.max(260,vv.height)+'px');
+    session.style.setProperty('--keyboard-top',Math.max(0,vv.offsetTop)+'px');
+  }else{
+    session.style.removeProperty('--keyboard-vh');session.style.removeProperty('--keyboard-top');
+  }
+  return open;
+}
 function focusRemoteFieldView(){
   if(!state.connected)return;
-  if(state.zoom<1.45)state.zoom=1.45;
-  const f=fitImageBase(),sw=f.width*state.zoom,sh=f.height*state.zoom;
-  const desiredY=Math.max(64,Math.min(f.wrapH*.26,210));
-  const currentY=f.wrapH/2+state.panY+(state.cursor.y-.5)*sh;
-  state.panY+=desiredY-currentY;
-  const desiredX=f.wrapW*.5,currentX=f.wrapW/2+state.panX+(state.cursor.x-.5)*sw;
-  if(currentX<f.wrapW*.15||currentX>f.wrapW*.85)state.panX+=desiredX-currentX;
+  syncKeyboardViewport();
+  if(state.zoom<1.55)state.zoom=1.55;
+  const f=fitImageBase(),scaledW=f.width*state.zoom,scaledH=f.height*state.zoom;
+  const wr=$('#screenWrap').getBoundingClientRect(),vv=window.visualViewport;
+  const visibleTop=vv?Math.max(wr.top,vv.offsetTop):wr.top;
+  const visibleBottom=vv?Math.min(wr.bottom,vv.offsetTop+vv.height):wr.bottom;
+  const visibleH=Math.max(120,visibleBottom-visibleTop);
+  // Keep the remote insertion point around the upper-middle of the area that is
+  // actually visible above the phone keyboard, not the hidden 100dvh layout.
+  const desiredClientY=visibleTop+Math.max(54,Math.min(visibleH*.38,220));
+  const currentClientY=wr.top+wr.height/2+state.panY+(state.cursor.y-.5)*scaledH;
+  state.panY+=desiredClientY-currentClientY;
+  const desiredClientX=wr.left+wr.width*.5;
+  const currentClientX=wr.left+wr.width/2+state.panX+(state.cursor.x-.5)*scaledW;
+  if(currentClientX<wr.left+wr.width*.14||currentClientX>wr.right-wr.width*.14)state.panX+=desiredClientX-currentClientX;
   clampPan();applyTransform();requestSharpFrame();
 }
 function openKeyboardForCursor(numeric=false,force=false){
@@ -898,13 +921,22 @@ function fileChunk(u){
 
 async function sendFiles(files){
   if(!state.canAdmin)return toast('Envio de arquivos bloqueado pelo computador remoto');
-  for(const file of files){
-    const id=Date.now()+'-'+Math.random().toString(16).slice(2,10)+'-'+file.name;
-    wsSend({type:'file_offer',id,name:file.name,size:file.size,clipboard:false,batch_id:crypto.randomUUID?.()||String(Date.now()),batch_final:true});
+  files=[...files].filter(Boolean);if(!files.length)return;
+  const names=[];
+  for(let pos=0;pos<files.length;pos++){
+    const file=files[pos],id=Date.now()+'-'+Math.random().toString(16).slice(2,10)+'-'+file.name;
+    names.push(file.name);
+    wsSend({type:'file_offer',id,name:file.name,size:file.size,clipboard:false,batch_id:crypto.randomUUID?.()||String(Date.now()),batch_final:pos===files.length-1});
     const ab=new Uint8Array(await file.arrayBuffer());let index=0;
     for(let o=0;o<ab.length;o+=262144)sendFilePacket(id,index++,false,ab.slice(o,o+262144));
-    sendFilePacket(id,index,true,new Uint8Array());toast('Arquivo enviado: '+file.name);
+    sendFilePacket(id,index,true,new Uint8Array());
   }
+  // The file picker/browser must never strand the user away from the remote
+  // desktop. Close it immediately and show one focused completion prompt.
+  closeAllSheets();closeEdgeMenu();
+  $('#sentFileName').textContent=names.length===1?names[0]:names.length+' arquivos';
+  $('#sentFileSheet').classList.remove('hidden');
+  toast('Arquivo enviado para Downloads / CHV Remote');
 }
 function sendFilePacket(id,index,final,chunk){
   const meta=new TextEncoder().encode(JSON.stringify({id,index,final})),out=new Uint8Array(5+meta.length+chunk.length);
@@ -973,6 +1005,8 @@ $$('[data-chord]').forEach(b=>b.onclick=()=>{chord(b.dataset.chord);$('#ctrlShor
 
 $('#fileInput').onchange=e=>{sendFiles([...e.target.files]);e.target.value=''};
 $('#sendFromPhoneBtn').onclick=()=>$('#fileInput').click();
+$('#closeSentFileBtn').onclick=()=>{$('#sentFileSheet').classList.add('hidden');toast('Arquivo enviado para o computador remoto')};
+$('#openSentFolderBtn').onclick=()=>{wsSend({type:'reveal_received_folder_request'});$('#sentFileSheet').classList.add('hidden');toast('Abrindo Downloads / CHV Remote no PC…')};
 $('#receiveSelectedBtn').onclick=receiveSelectedFiles;
 $('#remoteUpBtn').onclick=()=>requestRemotePath(state.remoteParent||'');
 $('#refreshRemoteFilesBtn').onclick=()=>requestRemotePath(state.remotePath||'');
@@ -1012,14 +1046,17 @@ setInterval(()=>refreshRelayHealth().then(updateConnectButton),10000);
 setInterval(refreshPresence,8000);
 
 
-// CHV Remote Web 2.9: keep the remote edit field visible when the iOS/Android
-// software keyboard changes the visual viewport height.
+// CHV Remote Web 3.0: resize the remote viewport to the real visible area
+// above the iOS/Android software keyboard, then keep the active remote field in it.
 if(window.visualViewport){
   let vvTimer=0;
-  window.visualViewport.addEventListener('resize',()=>{
-    clearTimeout(vvTimer);
-    vvTimer=setTimeout(()=>{
-      if(state.connected&&document.activeElement===$('#nativeKeyboardInput')&&(state.cursorEditable||state.cursorShape==='ibeam'))focusRemoteFieldView();
-    },45);
-  });
+  const updateVV=()=>{
+    clearTimeout(vvTimer);vvTimer=setTimeout(()=>{
+      syncKeyboardViewport();
+      if(state.connected&&document.activeElement===$('#nativeKeyboardInput')&&(state.cursorEditable||state.cursorShape==='ibeam'))requestAnimationFrame(focusRemoteFieldView);
+    },20);
+  };
+  window.visualViewport.addEventListener('resize',updateVV);
+  window.visualViewport.addEventListener('scroll',updateVV);
+  $('#nativeKeyboardInput').addEventListener('blur',()=>setTimeout(()=>{syncKeyboardViewport();clampPan();applyTransform()},80));
 }

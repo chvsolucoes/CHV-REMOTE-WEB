@@ -1,0 +1,41 @@
+name: Apply CHV Remote Web 2.7
+on:
+  push:
+    paths:
+      - '.github/workflows/apply-chv-web-v27.yml'
+permissions:
+  contents: write
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Patch and validate 2.7
+        run: |
+          set -euo pipefail
+          python3 tools/apply_v27.py
+          node --check pwa/app.js
+          grep -q 'Versão PWA 2.7.0' pwa/index.html
+          grep -q 'chv-remote-pwa-v2.7.0' pwa/sw.js
+          grep -q 'function probeCursorState' pwa/app.js
+          grep -q 'function renderRemoteFileList' pwa/app.js
+          grep -q 'fileBrowserSheet' pwa/index.html
+      - name: Commit source and publish Pages
+        run: |
+          set -euo pipefail
+          git config user.name 'CHV Remote Bot'
+          git config user.email 'chvsolucoes@users.noreply.github.com'
+          git add pwa/app.js pwa/app.css pwa/index.html pwa/sw.js
+          git commit -m 'CHV Remote Web 2.7 cursor keyboard and remote files'
+          git push origin main
+          git fetch origin gh-pages
+          git switch -C gh-pages origin/gh-pages
+          git show main:pwa/app.js > app.js
+          git show main:pwa/app.css > app.css
+          git show main:pwa/index.html > index.html
+          git show main:pwa/sw.js > sw.js
+          git add app.js app.css index.html sw.js
+          git commit -m 'Publish CHV Remote Web 2.7'
+          git push origin gh-pages

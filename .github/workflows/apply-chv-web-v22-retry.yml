@@ -1,0 +1,44 @@
+name: Apply CHV Remote Web 2.2 retry
+on:
+  push:
+    paths:
+      - .github/workflows/apply-chv-web-v22-retry.yml
+permissions:
+  contents: write
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Apply Web 2.2 patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          awk '/cat > \/tmp\/chv-v22.b64/ {f=1; next} f && /^[[:space:]]*B64[[:space:]]*$/ {exit} f {sub(/^[[:space:]]+/, ""); print}' .github/workflows/apply-chv-web-v22.yml > /tmp/chv-v22.b64
+          base64 -d /tmp/chv-v22.b64 | gzip -d > /tmp/chv-v22.patch
+          sed -i 's#a/chv_patch_old/#a/pwa/#g; s#b/chv_patch_new/#b/pwa/#g' /tmp/chv-v22.patch
+          git apply --check --exclude=pwa/sw.js /tmp/chv-v22.patch
+          git apply --exclude=pwa/sw.js /tmp/chv-v22.patch
+          sed -i "s/chv-remote-pwa-v2.1.0/chv-remote-pwa-v2.2.0/" pwa/sw.js
+          node --check pwa/app.js
+          grep -q 'Versão PWA 2.2.0' pwa/index.html
+          grep -q 'chv-remote-pwa-v2.2.0' pwa/sw.js
+      - name: Commit source and publish
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'CHV Remote Bot'
+          git config user.email 'chvsolucoes@users.noreply.github.com'
+          git add pwa/index.html pwa/app.js pwa/app.css pwa/sw.js
+          git commit -m 'CHV Remote Web 2.2 mobile controls'
+          git push origin HEAD:main
+          rm -rf /tmp/chv-pwa-v22 && mkdir /tmp/chv-pwa-v22
+          cp pwa/index.html pwa/app.js pwa/app.css pwa/sw.js pwa/manifest.webmanifest pwa/icon.svg pwa/icon-180.png /tmp/chv-pwa-v22/
+          git fetch origin gh-pages
+          git checkout -B gh-pages origin/gh-pages
+          cp /tmp/chv-pwa-v22/* .
+          git add index.html app.js app.css sw.js manifest.webmanifest icon.svg icon-180.png
+          git commit -m 'Publish CHV Remote Web 2.2'
+          git push origin HEAD:gh-pages

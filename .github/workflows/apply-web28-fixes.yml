@@ -1,0 +1,178 @@
+name: Apply CHV Remote Web 2.8 interaction fixes
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/apply-web28-fixes.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Patch Web app
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          p=Path('pwa/app.js')
+          s=p.read_text()
+
+          old="""function noteInteraction(){
+  if(!state.connected)return;
+  clearTimeout(state.interactionBurstTimer);
+  if(!state.interactionBurst){
+    state.interactionBurst=true;
+    // Durante mouse/arraste, privilegia latência em vez de mandar JPEG grande demais.
+    wsSend({type:'screen_profile',width:1280,height:720,fit:false,reason:'interactive'});
+    wsSend({type:'stream_tuning',width:1280,height:720,fps:35,jpeg_quality:62,subsampling:2,reason:'interactive'});
+  }
+  state.interactionBurstTimer=setTimeout(()=>{state.interactionBurst=false;sendAdaptiveStreamProfile('settled')},320);
+}
+"""
+          new="""function noteInteraction(){
+  if(!state.connected)return;
+  clearTimeout(state.interactionBurstTimer);
+  if(!state.interactionBurst){
+    state.interactionBurst=true;
+    // Perfil de baixa latência: menos bytes por frame e mais atualizações enquanto o usuário move/arrasta.
+    wsSend({type:'screen_profile',width:1024,height:576,fit:false,reason:'interactive'});
+    wsSend({type:'stream_tuning',width:1024,height:576,fps:45,jpeg_quality:55,subsampling:2,reason:'interactive'});
+  }
+  state.interactionBurstTimer=setTimeout(()=>{state.interactionBurst=false;sendAdaptiveStreamProfile('settled')},220);
+}
+"""
+          assert old in s, 'noteInteraction marker missing'
+          s=s.replace(old,new,1)
+
+          old="""function openKeyboardForCursor(numeric=false){
+  if(!state.connected)return false;
+  const likely=state.cursorEditable||state.cursorShape==='ibeam';
+  if(!likely)return false;
+  clearTimeout(state.focusProbeTimer);state.keyboardProbeArmed=false;
+  focusRemoteFieldView();
+  const input=$('#nativeKeyboardInput');
+  input.value='';input.setAttribute('inputmode',numeric?'numeric':'text');
+  try{input.focus({preventScroll:true});input.setSelectionRange(0,0)}catch{}
+  return true;
+}
+"""
+          new="""function openKeyboardForCursor(numeric=false){
+  if(!state.connected)return false;
+  const likely=state.cursorEditable||state.cursorShape==='ibeam';
+  clearTimeout(state.focusProbeTimer);state.keyboardProbeArmed=true;
+  const input=$('#nativeKeyboardInput');
+  input.value='';input.setAttribute('inputmode',numeric?'numeric':'text');
+  // O foco acontece dentro do gesto físico do usuário. Isso é necessário no iOS/Safari para o teclado nativo abrir.
+  try{input.focus({preventScroll:true});input.setSelectionRange(0,0)}catch{}
+  if(likely)focusRemoteFieldView();
+  state.focusProbeTimer=setTimeout(()=>{
+    if(!state.keyboardProbeArmed)return;
+    state.keyboardProbeArmed=false;try{input.blur()}catch{}
+  },700);
+  return true;
+}
+"""
+          assert old in s, 'keyboard marker missing'
+          s=s.replace(old,new,1)
+
+          old="""function sendCtrlAltDel(){
+  if(!state.connected)return;
+  sendKey('ctrl',true);sendKey('alt',true);sendKey('delete',true);
+  setTimeout(()=>{sendKey('delete',false);sendKey('alt',false);sendKey('ctrl',false)},120);
+  toast('Ctrl + Alt + Del enviado');
+}
+"""
+          new="""function sendCtrlAltDel(){
+  if(!state.connected)return;
+  // A Secure Attention Sequence não pode ser simulada como três teclas comuns no desktop protegido do Windows.
+  wsSend({type:'secure_attention_request',sequence:'ctrl_alt_del'});
+  postInputRefresh('secure_attention');
+  toast('Solicitando Ctrl + Alt + Del ao computador remoto…');
+}
+"""
+          assert old in s, 'cad marker missing'
+          s=s.replace(old,new,1)
+
+          old="""function applyCursorState(o){
+  const shape=String(o?.shape||'arrow').toLowerCase();
+  state.cursorShape=shape;state.cursorEditable=!!(o?.editable||shape==='ibeam');state.cursorNumeric=!!o?.numeric;
+  const c=$('#mouseCursor');c.dataset.shape=shape;c.innerHTML=cursorMarkup(shape);updateCursorVisual();
+}
+"""
+          new="""function normalizeCursorShape(value){
+  const raw=String(value||'arrow').toLowerCase().replace(/[\\s-]+/g,'_');
+  const aliases={
+    default:'arrow',normal:'arrow',pointer:'hand',link:'hand',hand2:'hand',
+    text:'ibeam',i_beam:'ibeam',beam:'ibeam',
+    busy:'wait',loading:'wait',progress:'appstarting',working:'appstarting',
+    crosshair:'cross',sizewe:'size_we',ew_resize:'size_we',
+    sizens:'size_ns',ns_resize:'size_ns',sizeall:'size_all',move:'size_all'
+  };
+  return aliases[raw]||raw;
+}
+function applyCursorState(o){
+  const shape=normalizeCursorShape(o?.shape||'arrow');
+  state.cursorShape=shape;state.cursorEditable=!!(o?.editable||shape==='ibeam');state.cursorNumeric=!!o?.numeric;
+  const c=$('#mouseCursor');c.dataset.shape=shape;c.innerHTML=cursorMarkup(shape);updateCursorVisual();
+}
+"""
+          assert old in s, 'cursor marker missing'
+          s=s.replace(old,new,1)
+          s=s.replace("if(!force&&now-state.cursorProbeAt<90)return;","if(!force&&now-state.cursorProbeAt<45)return;",1)
+
+          old="""    else if(!state.moved){clickAt(point,'left');probeTextFocus(point,false)}
+"""
+          new="""    else if(!state.moved){const keyboardOpened=openKeyboardForCursor(false);clickAt(point,'left');probeTextFocus(point,keyboardOpened)}
+"""
+          assert old in s, 'touch keyboard marker missing'
+          s=s.replace(old,new,1)
+
+          old="""function requestRemotePath(path=''){state.remoteSelected.clear();wsSend({type:'file_list_request',path:String(path||'')});$('#remoteFileList').innerHTML='<div class=\"file-loading\">Carregando…</div>'}
+"""
+          new="""function requestRemotePath(path=''){state.remoteSelected.clear();wsSend({type:'file_list_request',path:String(path||''),scope:path?'explicit':'default'});$('#remoteFileList').innerHTML='<div class=\"file-loading\">Carregando…</div>'}
+"""
+          assert old in s, 'file path marker missing'
+          s=s.replace(old,new,1)
+
+          marker="""    if(o.type==='cursor_state'){applyCursorState(o);return}
+"""
+          replacement="""    if(o.type==='cursor_state'){applyCursorState(o);return}
+    if(o.type==='secure_attention_result'){
+      toast(o.ok?'Ctrl + Alt + Del executado':'Não foi possível executar Ctrl + Alt + Del neste computador');
+      postInputRefresh('secure_attention_result');return;
+    }
+"""
+          assert marker in s, 'secure result marker missing'
+          s=s.replace(marker,replacement,1)
+
+          p.write_text(s)
+
+          sw=Path('pwa/sw.js')
+          t=sw.read_text().replace("const CACHE='chv-remote-pwa-v2.7.0';","const CACHE='chv-remote-pwa-v2.8.0';")
+          sw.write_text(t)
+          print('CHV_WEB28_PATCH_OK')
+          PY
+
+      - name: Verify JavaScript markers
+        run: |
+          grep -q "secure_attention_request" pwa/app.js
+          grep -q "normalizeCursorShape" pwa/app.js
+          grep -q "fps:45" pwa/app.js
+          grep -q "scope:path?'explicit':'default'" pwa/app.js
+          grep -q "chv-remote-pwa-v2.8.0" pwa/sw.js
+
+      - name: Commit patched Web 2.8
+        shell: bash
+        run: |
+          if git diff --quiet; then exit 0; fi
+          git config user.name "CHV Remote Build Bot"
+          git config user.email "chvremote-bot@users.noreply.github.com"
+          git add pwa/app.js pwa/sw.js
+          git commit -m "CHV Remote Web 2.8 keyboard cursor latency and CAD fixes"
+          git push

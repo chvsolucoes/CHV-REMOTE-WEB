@@ -186,3 +186,16 @@ body.session-immersive #app,html.session-immersive #app{height:100dvh!important;
   .edge-bubble{width:44px!important;height:44px!important;font-size:19px!important;border-width:2px!important}
   .edge-bubble small{left:50px!important}
 }
+
+
+/* CHV Remote Web 2.4 - native iOS gesture isolation, cursor-follow zoom and connection covers */
+html.session-active,body.session-active{overscroll-behavior:none!important;touch-action:none!important;-webkit-user-select:none!important;user-select:none!important;-webkit-touch-callout:none!important}
+body.session-active #sessionView,body.session-active #sessionView *{-webkit-user-select:none!important;user-select:none!important;-webkit-touch-callout:none!important}
+body.session-active #screenWrap,body.session-active #screenWrap *{touch-action:none!important;-webkit-user-drag:none!important}
+body.session-active #screenWrap ::selection,body.session-active #sessionView ::selection{background:transparent!important;color:inherit!important}
+.metrics,.zoom-badge,.control-badge,.remote-cursor,#screenPlaceholder{pointer-events:none!important}
+.list-item .pc.cover{width:84px;height:52px;flex:0 0 84px;border-radius:10px;background:#0b1723 center/cover no-repeat;overflow:hidden;color:#dce8f3}
+.list-item .pc.cover>span{font-size:20px;opacity:.8}.list-item .pc.cover.has-thumb>span{display:none}
+.list-item .pc.cover .status-dot{right:4px;bottom:4px;border-color:#fff;width:11px;height:11px}
+.list-actions{gap:3px}.list-item .rename{min-width:32px;padding:7px 6px;font-size:16px;background:transparent;color:#6e7e8d}.list-item .go{font-size:11px;padding:8px 7px}
+@media(max-width:430px){.list-item{padding:10px 9px;gap:8px}.list-item .pc.cover{width:74px;height:46px;flex-basis:74px}.list-item .go{font-size:10px;padding:7px 6px}.list-item .star{padding:4px}.list-item .rename{padding:4px;min-width:26px}}

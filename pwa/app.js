@@ -10,7 +10,7 @@ const state={
   remoteW:0,remoteH:0,frameAt:0,fps:0,mbps:0,
   pointers:new Map(),gesture:null,longPressTimer:null,longPressFired:false,dragging:false,moved:false,
   cursor:{x:.5,y:.5},lastPointer:null,zoom:1,panX:0,panY:0,
-  keyboardComposing:false,edgeGesture:null,menuOpen:false,quickPasswordTarget:null,
+  keyboardComposing:false,edgeGesture:null,menuOpen:false,quickPasswordTarget:null,panGesture:null,
   modifiers:new Set(),ctrlHoldTimer:null,ctrlLong:false,fullscreenFallback:false,sharpTimer:null,lastFocusProbeAt:0
 };
 const settings=Object.assign({
@@ -32,8 +32,8 @@ function showView(id){
   $$('#bottomNav button').forEach(b=>b.classList.toggle('active',b.dataset.view===id));
 }
 function qProfile(){
-  return settings.quality==='quality'?[1920,1080,'contain']:
-         settings.quality==='speed'?[1280,720,'contain']:[1600,900,'contain'];
+  return settings.quality==='quality'?[2560,1440,'contain']:
+         settings.quality==='speed'?[1280,720,'contain']:[1920,1080,'contain'];
 }
 function uniqueCodes(){
   const vals=[cleanId($('#remoteId').value),...history.map(x=>x.id),...favorites.map(x=>x.id)];
@@ -196,7 +196,7 @@ function handleMessage(e,code,secret,timeout){
       clearTimeout(timeout);state.connected=true;
       state.canAdmin=((o.access_level||o.access||'admin')+'').toLowerCase()!=='basic';
       state.onlineCodes.add(code);setStatus('Conectado');
-      const [w,h,fit]=qProfile();wsSend({type:'screen_profile',width:w,height:h,fit});
+      const [w,h,fit]=qProfile();wsSend({type:'screen_profile',width:w,height:h,fit});setTimeout(requestSharpFrame,220);
       saveConnection(code,secret);
       if(settings.autoAudio)setFeature('system_audio',true);
       if(settings.autoMic)setFeature('microphone',true);
@@ -416,7 +416,21 @@ function startLongPress(p){
   },620);
 }
 function resetGestureFlags(){
-  state.moved=false;state.dragging=false;state.longPressFired=false;state.lastPointer=null;clearLongPress();
+  state.moved=false;state.dragging=false;state.longPressFired=false;state.lastPointer=null;state.panGesture=null;clearLongPress();
+}
+function fitImageBase(){
+  const wr=$('#screenWrap').getBoundingClientRect();
+  const iw=Math.max(1,state.remoteW||wr.width),ih=Math.max(1,state.remoteH||wr.height);
+  const scale=Math.min(wr.width/iw,wr.height/ih);
+  return {wrapW:wr.width,wrapH:wr.height,width:iw*scale,height:ih*scale};
+}
+function clampPan(){
+  if(state.zoom<=1){state.panX=0;state.panY=0;return}
+  const f=fitImageBase();
+  const maxX=Math.max(0,(f.width*state.zoom-f.wrapW)/2);
+  const maxY=Math.max(0,(f.height*state.zoom-f.wrapH)/2);
+  state.panX=Math.max(-maxX,Math.min(maxX,state.panX));
+  state.panY=Math.max(-maxY,Math.min(maxY,state.panY));
 }
 function pointerDown(e){
   if(!state.connected)return;
@@ -432,6 +446,7 @@ function pointerDown(e){
   }
   if(state.pointers.size>2)return;
   state.lastPointer={x:e.clientX,y:e.clientY,time:performance.now()};
+  if(state.zoom>1)state.panGesture={id:e.pointerId,startX:e.clientX,startY:e.clientY,panX:state.panX,panY:state.panY};
   const p=settings.pointerMode==='mouse'?state.cursor:normalizedPoint(e.clientX,e.clientY);
   startLongPress(p);
 }
@@ -449,6 +464,11 @@ function pointerMove(e){
   }
   const dx=e.clientX-prev.x,dy=e.clientY-prev.y;
   if(Math.hypot(e.clientX-ptr.startX,e.clientY-ptr.startY)>8){state.moved=true;clearLongPress()}
+  if(state.zoom>1&&state.panGesture?.id===e.pointerId&&state.moved){
+    state.panX=state.panGesture.panX+(e.clientX-state.panGesture.startX);
+    state.panY=state.panGesture.panY+(e.clientY-state.panGesture.startY);
+    clampPan();applyTransform();requestSharpFrame();return;
+  }
   if(settings.pointerMode==='mouse'){
     if(!state.moved)return;
     const b=imageBox();
@@ -461,7 +481,7 @@ function pointerMove(e){
       state.dragging=true;
       const start=normalizedPoint(ptr.startX,ptr.startY);sendMouse('down',start,{button:'left'});
     }
-    sendMouse('move',p);
+    sendMouse('move',p,{button:'left',buttons:1});
   }
 }
 function pointerUp(e){
@@ -476,7 +496,7 @@ function pointerUp(e){
     if(!state.moved){clickAt(state.cursor,'left');probeTextFocus(state.cursor)}
   }else{
     const p=normalizedPoint(e.clientX,e.clientY);
-    if(state.dragging)sendMouse('up',p,{button:'left'});else if(!state.moved){clickAt(p,'left');probeTextFocus(p)}
+    if(state.dragging){sendMouse('move',p,{button:'left',buttons:1});sendMouse('up',p,{button:'left'})}else if(!state.moved){clickAt(p,'left');probeTextFocus(p)}
   }
   resetGestureFlags();
 }
@@ -504,6 +524,7 @@ function handlePinch(){
   applyTransform();requestSharpFrame();
 }
 function applyTransform(){
+  clampPan();
   const vp=$('#screenViewport');
   vp.style.transform=`translate(${state.panX}px,${state.panY}px) scale(${state.zoom})`;
   const zb=$('#zoomBadge');zb.textContent=Math.round(state.zoom*100)+'%';zb.classList.toggle('hidden',state.zoom===1);
@@ -523,7 +544,7 @@ function requestSharpFrame(){
   clearTimeout(state.sharpTimer);
   state.sharpTimer=setTimeout(()=>{
     if(!state.connected)return;
-    let w=1600,h=900;
+    let w=1920,h=1080;
     if(settings.quality==='speed'){w=1280;h=720}
     if(settings.quality==='quality'){w=2560;h=1440}
     if(state.zoom>=1.45){w=Math.max(w,2560);h=Math.max(h,1440)}
@@ -553,7 +574,7 @@ function nativeKeyDown(e){
 function nativeCompositionEnd(e){state.keyboardComposing=false;if(e.data)typeText(e.data);e.target.value=''}
 function setImmersive(on){
   state.fullscreenFallback=!!on;
-  $('#sessionView').classList.toggle('immersive',!!on);document.body.classList.toggle('session-immersive',!!on);
+  $('#sessionView').classList.toggle('immersive',!!on);document.body.classList.toggle('session-immersive',!!on);document.documentElement.classList.toggle('session-immersive',!!on);
   $('#menuFullscreenBtn')?.classList.toggle('active',!!on);$('#sessionFullscreenBtn').textContent=on?'⛶ Sair da tela cheia':'⛶ Tela cheia';
   setTimeout(()=>{resetViewTransform();requestSharpFrame()},80);
 }
@@ -686,7 +707,12 @@ $$('[data-chord]').forEach(b=>b.onclick=()=>{chord(b.dataset.chord);$('#ctrlShor
 
 $('#fileInput').onchange=e=>{sendFiles([...e.target.files]);e.target.value=''};
 const sw=$('#screenWrap');
-sw.addEventListener('pointerdown',pointerDown,{passive:false});sw.addEventListener('pointermove',pointerMove,{passive:false});sw.addEventListener('pointerup',pointerUp,{passive:false});sw.addEventListener('pointercancel',pointerCancel,{passive:false});sw.addEventListener('wheel',wheel,{passive:false});sw.addEventListener('contextmenu',e=>e.preventDefault());
+sw.addEventListener('pointerdown',pointerDown,{passive:false});sw.addEventListener('pointermove',pointerMove,{passive:false});sw.addEventListener('pointerup',pointerUp,{passive:false});sw.addEventListener('pointercancel',pointerCancel,{passive:false});sw.addEventListener('wheel',wheel,{passive:false});sw.addEventListener('contextmenu',e=>e.preventDefault());sw.addEventListener('selectstart',e=>e.preventDefault());sw.addEventListener('dragstart',e=>e.preventDefault());
+const sessionActive=()=>$('#sessionView').classList.contains('active');
+document.addEventListener('selectstart',e=>{if(sessionActive()&&!e.target.closest?.('input,textarea'))e.preventDefault()},{capture:true});
+document.addEventListener('contextmenu',e=>{if(sessionActive()&&!e.target.closest?.('input,textarea'))e.preventDefault()},{capture:true});
+document.addEventListener('dragstart',e=>{if(sessionActive())e.preventDefault()},{capture:true});
+document.addEventListener('selectionchange',()=>{if(sessionActive()){const sel=window.getSelection?.();if(sel&&!$('#nativeKeyboardInput').matches(':focus'))try{sel.removeAllRanges()}catch{}}});
 const nki=$('#nativeKeyboardInput');nki.addEventListener('beforeinput',nativeBeforeInput);nki.addEventListener('keydown',nativeKeyDown);nki.addEventListener('compositionstart',()=>state.keyboardComposing=true);nki.addEventListener('compositionend',nativeCompositionEnd);
 
 function fullscreenChanged(){
@@ -697,7 +723,7 @@ function fullscreenChanged(){
   }
 }
 document.addEventListener('fullscreenchange',fullscreenChanged);document.addEventListener('webkitfullscreenchange',fullscreenChanged);
-window.addEventListener('resize',()=>requestAnimationFrame(updateCursorVisual));
+window.addEventListener('resize',()=>requestAnimationFrame(()=>{clampPan();applyTransform();requestSharpFrame()}));
 window.addEventListener('orientationchange',()=>setTimeout(()=>{resetViewTransform();requestSharpFrame()},160));
 window.addEventListener('pagehide',()=>{releaseModifiers();try{state.ws?.close()}catch{}});
 if('serviceWorker'in navigator)window.addEventListener('load',()=>navigator.serviceWorker.register('sw.js').catch(()=>{}));

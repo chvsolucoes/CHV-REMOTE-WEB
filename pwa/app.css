@@ -162,3 +162,27 @@ body.session-immersive{padding:0!important;overflow:hidden;background:#000}
   .sheet-card{max-height:96dvh;border-radius:14px;padding:10px}.key-row button,.key-grid button,.modifier-row button{min-height:34px}
   .edge-menu{bottom:4%;gap:6px}.edge-bubble{width:46px;height:46px;font-size:20px;border-width:2px}
 }
+
+
+/* CHV Remote Web 2.3 - touch isolation, zoom pan and fullscreen safe-area fixes */
+.session-view,.session-view *{-webkit-user-select:none!important;user-select:none!important;-webkit-touch-callout:none!important}
+.session-view{-webkit-user-drag:none;touch-action:none}
+.screen-wrap,.screen-wrap *{overscroll-behavior:none;-webkit-user-select:none!important;user-select:none!important;-webkit-touch-callout:none!important}
+.screen-viewport,.screen-viewport img{touch-action:none!important;-webkit-user-drag:none!important;user-drag:none!important}
+.metrics,.metrics span,.zoom-badge,.control-badge,.session-bar,.session-bar *{user-select:none!important;-webkit-user-select:none!important;-webkit-touch-callout:none!important}
+.screen-viewport img{image-rendering:auto!important;filter:none;will-change:transform}
+.edge-handle{left:max(0px,env(safe-area-inset-left));bottom:28%}
+.edge-menu{left:calc(env(safe-area-inset-left) + 10px);top:50%;bottom:auto;transform:translateY(-50%);gap:clamp(5px,1.15vh,10px);max-height:calc(100dvh - env(safe-area-inset-top) - env(safe-area-inset-bottom) - 18px)}
+.edge-submenu{left:calc(env(safe-area-inset-left) + 78px);top:50%;bottom:auto;transform:translateY(-50%);gap:8px}
+.session-view.immersive .edge-handle{left:max(0px,env(safe-area-inset-left));bottom:26%}
+.session-view.immersive .edge-menu{left:calc(env(safe-area-inset-left) + 10px);top:50%;bottom:auto;transform:translateY(-50%)}
+.session-view.immersive .edge-submenu{left:calc(env(safe-area-inset-left) + 76px);top:50%;bottom:auto;transform:translateY(-50%)}
+body.session-immersive .sheet,html.session-immersive .sheet{z-index:240!important;pointer-events:auto!important}
+body.session-immersive .toast,html.session-immersive .toast{z-index:260!important}
+body.session-immersive #app,html.session-immersive #app{height:100dvh!important;overflow:hidden!important;background:#000!important}
+@media(orientation:landscape) and (max-height:520px){
+  .edge-menu{top:50%!important;bottom:auto!important;gap:5px!important;transform:translateY(-50%)!important}
+  .edge-submenu{top:50%!important;bottom:auto!important;transform:translateY(-50%)!important}
+  .edge-bubble{width:44px!important;height:44px!important;font-size:19px!important;border-width:2px!important}
+  .edge-bubble small{left:50px!important}
+}

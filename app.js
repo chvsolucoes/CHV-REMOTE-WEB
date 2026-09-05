@@ -14,7 +14,8 @@ const state={
   modifiers:new Set(),ctrlHoldTimer:null,ctrlLong:false,fullscreenFallback:false,sharpTimer:null,lastFocusProbeAt:0,
   currentCode:null,lastThumbAt:0,mouseDragArmTimer:null,mouseDragArmed:false,
   pendingFrame:null,frameDecoding:false,pendingMouseMove:null,mouseMoveRaf:0,
-  lastTapAt:0,lastTapPos:null,doubleTapDrag:false,focusProbeTimer:null,keyboardProbeArmed:false
+  lastTapAt:0,lastTapPos:null,doubleTapDrag:false,focusProbeTimer:null,keyboardProbeArmed:false,
+  interactionBurstTimer:null,interactionBurst:false,postInputTimers:[]
 };
 const settings=Object.assign({
   quality:'balanced',savePasswords:false,autoAudio:false,autoMic:false,pointerMode:'mouse'
@@ -60,8 +61,25 @@ function sendAdaptiveStreamProfile(reason='view'){
   if(!state.connected)return;
   const [w,h]=adaptiveDimensions(),t=streamTuning();
   wsSend({type:'screen_profile',width:w,height:h,fit:false,reason});
-  // Hosts 2.5+ aplicam FPS/qualidade de forma adaptativa; hosts antigos ignoram sem quebrar compatibilidade.
   wsSend({type:'stream_tuning',width:w,height:h,fps:t.fps,jpeg_quality:t.jpeg_quality,subsampling:t.subsampling,reason});
+}
+function noteInteraction(){
+  if(!state.connected)return;
+  clearTimeout(state.interactionBurstTimer);
+  if(!state.interactionBurst){
+    state.interactionBurst=true;
+    // Durante mouse/arraste, privilegia latência em vez de mandar JPEG grande demais.
+    wsSend({type:'screen_profile',width:1280,height:720,fit:false,reason:'interactive'});
+    wsSend({type:'stream_tuning',width:1280,height:720,fps:35,jpeg_quality:62,subsampling:2,reason:'interactive'});
+  }
+  state.interactionBurstTimer=setTimeout(()=>{state.interactionBurst=false;sendAdaptiveStreamProfile('settled')},320);
+}
+function postInputRefresh(reason='input'){
+  for(const t of state.postInputTimers)clearTimeout(t);state.postInputTimers=[];
+  for(const ms of [0,55,130,260,520,900])state.postInputTimers.push(setTimeout(()=>{
+    if(state.connected)wsSend({type:'request_frame',reason});
+  },ms));
+  state.postInputTimers.push(setTimeout(()=>sendAdaptiveStreamProfile('post_'+reason),940));
 }
 
 function uniqueCodes(){
@@ -307,6 +325,7 @@ function queueMouseMove(p,extra={}){
 }
 function sendMouse(action,p,extra={}){
   if(!state.connected)return;
+  noteInteraction();
   if(action==='move'){queueMouseMove(p,extra);return}
   flushMouseMove();
   wsSend({type:'input',kind:'mouse',action,x:p.x,y:p.y,...extra});
@@ -317,7 +336,7 @@ function requestImmediateFrame(reason='input'){
 }
 function clickAt(p,button='left'){
   sendMouse('down',p,{button});sendMouse('up',p,{button});
-  requestImmediateFrame(button==='right'?'right_click':'click');
+  postInputRefresh(button==='right'?'right_click':'click');
 }
 function armKeyboardProbe(){
   const input=$('#nativeKeyboardInput');
@@ -328,7 +347,7 @@ function armKeyboardProbe(){
   state.focusProbeTimer=setTimeout(()=>{
     if(!state.keyboardProbeArmed)return;
     state.keyboardProbeArmed=false;try{input.blur()}catch{}
-  },420);
+  },900);
 }
 function probeTextFocus(p){
   if(!state.connected)return;
@@ -345,7 +364,7 @@ function resolveTextFocus(editable,numeric=false){
   try{input.blur();input.focus({preventScroll:true});input.setSelectionRange(0,0)}catch{}
 }
 
-function sendKey(key,down){if(state.connected)wsSend({type:'input',kind:'key',key,down})}
+function sendKey(key,down){if(state.connected){noteInteraction();wsSend({type:'input',kind:'key',key,down});if(!down)postInputRefresh('key')}}
 function tapKey(k){sendKey(k,true);sendKey(k,false)}
 function typeText(t){for(const ch of t)tapKey(ch)}
 function sendCtrlAltDel(){
@@ -571,7 +590,7 @@ function pointerDown(e){
   state.lastPointer={x:e.clientX,y:e.clientY,time:now};
   if(settings.pointerMode==='mouse'){
     const lp=state.lastTapPos;
-    const doubleTap=!!lp&&now-state.lastTapAt<=360&&Math.hypot(e.clientX-lp.x,e.clientY-lp.y)<=30;
+    const doubleTap=!!lp&&now-state.lastTapAt<=420&&Math.hypot(e.clientX-lp.x,e.clientY-lp.y)<=38;
     if(doubleTap){
       state.doubleTapDrag=true;state.dragging=true;state.lastTapAt=0;state.lastTapPos=null;
       clearLongPress();clearMouseDragArm();sendMouse('down',state.cursor,{button:'left'});
@@ -612,7 +631,7 @@ function pointerUp(e){
   if(state.longPressFired){resetGestureFlags();return}
   if(settings.pointerMode==='mouse'){
     if(state.dragging){
-      sendMouse('up',state.cursor,{button:'left'});requestImmediateFrame(state.doubleTapDrag?'double_drag':'drag');
+      sendMouse('up',state.cursor,{button:'left'});postInputRefresh(state.doubleTapDrag?'double_drag':'drag');
       if(!state.moved&&state.doubleTapDrag)probeTextFocus(state.cursor);
       state.lastTapAt=0;state.lastTapPos=null;
     }else if(!state.moved){
@@ -621,7 +640,7 @@ function pointerUp(e){
     }else{state.lastTapAt=0;state.lastTapPos=null}
   }else{
     const point=normalizedPoint(e.clientX,e.clientY);
-    if(state.dragging){sendMouse('move',point,{button:'left',buttons:1});sendMouse('up',point,{button:'left'});requestImmediateFrame('touch_drag')}
+    if(state.dragging){sendMouse('move',point,{button:'left',buttons:1});sendMouse('up',point,{button:'left'});postInputRefresh('touch_drag')}
     else if(!state.moved){clickAt(point,'left');probeTextFocus(point)}
   }
   resetGestureFlags();
@@ -828,7 +847,10 @@ const sw=$('#screenWrap');
 sw.addEventListener('pointerdown',pointerDown,{passive:false});sw.addEventListener('pointermove',pointerMove,{passive:false});sw.addEventListener('pointerup',pointerUp,{passive:false});sw.addEventListener('pointercancel',pointerCancel,{passive:false});sw.addEventListener('wheel',wheel,{passive:false});sw.addEventListener('contextmenu',e=>e.preventDefault());sw.addEventListener('selectstart',e=>e.preventDefault());sw.addEventListener('dragstart',e=>e.preventDefault());
 const sessionActive=()=>$('#sessionView').classList.contains('active');
 const blockIOSNativeGesture=e=>{if(!sessionActive())return;if(e.target.closest?.('button,input,textarea,select,.sheet-card'))return;if(e.cancelable)e.preventDefault()};
-['touchstart','touchmove','touchend','touchcancel','gesturestart','gesturechange','gestureend'].forEach(t=>sw.addEventListener(t,blockIOSNativeGesture,{passive:false}));
+['touchstart','touchmove','touchend','touchcancel','gesturestart','gesturechange','gestureend'].forEach(t=>{
+  sw.addEventListener(t,blockIOSNativeGesture,{passive:false});
+  document.addEventListener(t,blockIOSNativeGesture,{passive:false,capture:true});
+});
 document.addEventListener('selectstart',e=>{if(sessionActive()&&!e.target.closest?.('input,textarea'))e.preventDefault()},{capture:true});
 document.addEventListener('contextmenu',e=>{if(sessionActive()&&!e.target.closest?.('input,textarea'))e.preventDefault()},{capture:true});
 document.addEventListener('dragstart',e=>{if(sessionActive())e.preventDefault()},{capture:true});

@@ -12,7 +12,9 @@ const state={
   cursor:{x:.5,y:.5},lastPointer:null,zoom:1,panX:0,panY:0,
   keyboardComposing:false,edgeGesture:null,menuOpen:false,quickPasswordTarget:null,panGesture:null,
   modifiers:new Set(),ctrlHoldTimer:null,ctrlLong:false,fullscreenFallback:false,sharpTimer:null,lastFocusProbeAt:0,
-  currentCode:null,lastThumbAt:0,mouseDragArmTimer:null,mouseDragArmed:false
+  currentCode:null,lastThumbAt:0,mouseDragArmTimer:null,mouseDragArmed:false,
+  pendingFrame:null,frameDecoding:false,pendingMouseMove:null,mouseMoveRaf:0,
+  lastTapAt:0,lastTapPos:null,doubleTapDrag:false,focusProbeTimer:null,keyboardProbeArmed:false
 };
 const settings=Object.assign({
   quality:'balanced',savePasswords:false,autoAudio:false,autoMic:false,pointerMode:'mouse'
@@ -38,8 +40,28 @@ function showView(id){
 }
 
 function qProfile(){
-  return settings.quality==='quality'?[2880,1620,'contain']:
-         settings.quality==='speed'?[1600,900,'contain']:[2304,1296,'contain'];
+  // O iPhone não precisa receber um JPEG 4K inteiro em 100% de zoom.
+  // A resolução sobe dinamicamente apenas quando o usuário realmente amplia.
+  return settings.quality==='quality'?[1920,1080,'contain']:
+         settings.quality==='speed'?[1280,720,'contain']:[1600,900,'contain'];
+}
+function streamTuning(){
+  return settings.quality==='quality'?{fps:26,jpeg_quality:84,subsampling:2}:
+         settings.quality==='speed'?{fps:30,jpeg_quality:68,subsampling:2}:{fps:30,jpeg_quality:76,subsampling:2};
+}
+function adaptiveDimensions(){
+  let [w,h]=qProfile();
+  if(state.zoom>=1.45){w=Math.max(w,1920);h=Math.max(h,1080)}
+  if(state.zoom>=2.15){w=Math.max(w,2560);h=Math.max(h,1440)}
+  if(state.zoom>=3.25){w=Math.max(w,settings.quality==='quality'?3840:3200);h=Math.max(h,settings.quality==='quality'?2160:1800)}
+  return [w,h];
+}
+function sendAdaptiveStreamProfile(reason='view'){
+  if(!state.connected)return;
+  const [w,h]=adaptiveDimensions(),t=streamTuning();
+  wsSend({type:'screen_profile',width:w,height:h,fit:false,reason});
+  // Hosts 2.5+ aplicam FPS/qualidade de forma adaptativa; hosts antigos ignoram sem quebrar compatibilidade.
+  wsSend({type:'stream_tuning',width:w,height:h,fps:t.fps,jpeg_quality:t.jpeg_quality,subsampling:t.subsampling,reason});
 }
 
 function uniqueCodes(){
@@ -203,7 +225,7 @@ function handleMessage(e,code,secret,timeout){
       clearTimeout(timeout);state.connected=true;
       state.canAdmin=((o.access_level||o.access||'admin')+'').toLowerCase()!=='basic';
       state.onlineCodes.add(code);setStatus('Conectado');state.currentCode=code;
-      const [w,h,fit]=qProfile();wsSend({type:'screen_profile',width:w,height:h,fit});setTimeout(requestSharpFrame,220);
+      sendAdaptiveStreamProfile('connect');setTimeout(requestSharpFrame,160);
       saveConnection(code,secret);
       if(settings.autoAudio)setFeature('system_audio',true);
       if(settings.autoMic)setFeature('microphone',true);
@@ -215,7 +237,7 @@ function handleMessage(e,code,secret,timeout){
     }
     if(['text_focus','editable_focus','input_focus'].includes(o.type)){
       const editable=o.editable!==false&&o.focused!==false;
-      if(editable)openNativeKeyboard(o.numeric?'numeric':'text',true);
+      resolveTextFocus(editable,!!o.numeric);
       return;
     }
     if(o.type==='file_offer'){acceptFile(o);return}
@@ -232,6 +254,13 @@ function be32(u,o){return ((u[o]<<24)>>>0)+(u[o+1]<<16)+(u[o+2]<<8)+u[o+3]}
 function be16(u,o){return (u[o]<<8)+u[o+1]}
 function frame(u){
   if(u.length<10)return;
+  // Nunca deixa decodificação antiga formar fila no Safari. Guarda somente o frame mais recente.
+  if(state.frameDecoding){state.pendingFrame=u;return}
+  renderFrame(u);
+}
+function renderFrame(u){
+  if(u.length<10)return;
+  state.frameDecoding=true;
   state.remoteW=be32(u,1);state.remoteH=be32(u,5);
   const now=performance.now(),dt=Math.max(1,now-state.frameAt);state.frameAt=now;
   const ifps=1000/dt,imbps=(u.length*8/1e6)/(dt/1000);
@@ -240,12 +269,17 @@ function frame(u){
   $('#fpsMetric').textContent=state.fps.toFixed(0)+' FPS';
   $('#mbpsMetric').textContent=state.mbps.toFixed(1)+' Mbps';
   const blob=new Blob([u.slice(9)],{type:'image/jpeg'}),url=URL.createObjectURL(blob),img=$('#remoteScreen'),old=img.dataset.url;
+  const done=()=>{
+    state.frameDecoding=false;
+    const next=state.pendingFrame;state.pendingFrame=null;
+    if(next)requestAnimationFrame(()=>renderFrame(next));
+  };
   img.onload=()=>{
     if(old)URL.revokeObjectURL(old);
     $('#screenPlaceholder').style.display='none';
-    updateCursorVisual();
-    saveThumbnail(false);
+    updateCursorVisual();saveThumbnail(false);done();
   };
+  img.onerror=()=>{URL.revokeObjectURL(url);done()};
   img.dataset.url=url;img.src=url;
 }
 
@@ -262,20 +296,55 @@ function normalizedPoint(x,y){
     y:Math.max(0,Math.min(1,(y-b.top)/Math.max(1,b.height)))
   };
 }
+function flushMouseMove(){
+  if(state.mouseMoveRaf){cancelAnimationFrame(state.mouseMoveRaf);state.mouseMoveRaf=0}
+  const item=state.pendingMouseMove;state.pendingMouseMove=null;
+  if(item&&state.connected)wsSend({type:'input',kind:'mouse',action:'move',x:item.p.x,y:item.p.y,...item.extra});
+}
+function queueMouseMove(p,extra={}){
+  state.pendingMouseMove={p:{x:p.x,y:p.y},extra:{...extra}};
+  if(!state.mouseMoveRaf)state.mouseMoveRaf=requestAnimationFrame(()=>{state.mouseMoveRaf=0;flushMouseMove()});
+}
 function sendMouse(action,p,extra={}){
   if(!state.connected)return;
+  if(action==='move'){queueMouseMove(p,extra);return}
+  flushMouseMove();
   wsSend({type:'input',kind:'mouse',action,x:p.x,y:p.y,...extra});
+}
+function requestImmediateFrame(reason='input'){
+  if(!state.connected)return;
+  wsSend({type:'request_frame',reason});
 }
 function clickAt(p,button='left'){
   sendMouse('down',p,{button});sendMouse('up',p,{button});
-  setTimeout(requestSharpFrame,90);
+  requestImmediateFrame(button==='right'?'right_click':'click');
+}
+function armKeyboardProbe(){
+  const input=$('#nativeKeyboardInput');
+  clearTimeout(state.focusProbeTimer);state.keyboardProbeArmed=true;
+  // Foco acontece dentro do gesto do usuário, porém com inputmode=none: não abre teclado em cliques comuns.
+  input.setAttribute('inputmode','none');input.value='';
+  try{input.focus({preventScroll:true})}catch{}
+  state.focusProbeTimer=setTimeout(()=>{
+    if(!state.keyboardProbeArmed)return;
+    state.keyboardProbeArmed=false;try{input.blur()}catch{}
+  },420);
 }
 function probeTextFocus(p){
   if(!state.connected)return;
-  state.lastFocusProbeAt=Date.now();
-  // Hosts atualizados podem responder com {type:'text_focus', editable:true, numeric:false}.
+  state.lastFocusProbeAt=Date.now();armKeyboardProbe();
   wsSend({type:'text_focus_probe',x:p.x,y:p.y});
 }
+function resolveTextFocus(editable,numeric=false){
+  clearTimeout(state.focusProbeTimer);
+  const input=$('#nativeKeyboardInput');
+  if(!editable){state.keyboardProbeArmed=false;try{input.blur()}catch{};return}
+  state.keyboardProbeArmed=false;
+  input.setAttribute('inputmode',numeric?'numeric':'text');input.value='';
+  // O input já foi focado durante o toque; trocar o inputmode e refocar preserva a ativação no iOS/PWA.
+  try{input.blur();input.focus({preventScroll:true});input.setSelectionRange(0,0)}catch{}
+}
+
 function sendKey(key,down){if(state.connected)wsSend({type:'input',kind:'key',key,down})}
 function tapKey(k){sendKey(k,true);sendKey(k,false)}
 function typeText(t){for(const ch of t)tapKey(ch)}
@@ -456,13 +525,14 @@ function clearMouseDragArm(){clearTimeout(state.mouseDragArmTimer);state.mouseDr
 function startLongPress(p){
   clearLongPress();state.longPressFired=false;
   state.longPressTimer=setTimeout(()=>{
+    if(state.dragging||state.doubleTapDrag)return;
     state.longPressFired=true;clearMouseDragArm();
     const target=settings.pointerMode==='mouse'?state.cursor:p;
     clickAt(target,'right');try{navigator.vibrate?.(18)}catch{};toast('Clique direito');
   },620);
 }
 function resetGestureFlags(){
-  state.moved=false;state.dragging=false;state.longPressFired=false;state.lastPointer=null;state.panGesture=null;clearLongPress();clearMouseDragArm();
+  state.moved=false;state.dragging=false;state.doubleTapDrag=false;state.longPressFired=false;state.lastPointer=null;state.panGesture=null;clearLongPress();clearMouseDragArm();
 }
 function fitImageBase(){
   const wr=$('#screenWrap').getBoundingClientRect();
@@ -481,7 +551,7 @@ function clampPan(){
 function followCursorPan(){
   if(state.zoom<=1)return;
   const f=fitImageBase(),sw=f.width*state.zoom,sh=f.height*state.zoom;
-  const mx=Math.max(42,Math.min(96,f.wrapW*.18)),my=Math.max(42,Math.min(96,f.wrapH*.18));
+  const mx=Math.max(38,Math.min(82,f.wrapW*.15)),my=Math.max(38,Math.min(82,f.wrapH*.15));
   const sx=f.wrapW/2+state.panX+(state.cursor.x-.5)*sw;
   const sy=f.wrapH/2+state.panY+(state.cursor.y-.5)*sh;
   if(sx<mx)state.panX+=mx-sx;else if(sx>f.wrapW-mx)state.panX-=sx-(f.wrapW-mx);
@@ -494,15 +564,23 @@ function pointerDown(e){
   const wr=$('#screenWrap').getBoundingClientRect();
   if(e.clientX-wr.left<=24){e.preventDefault();state.edgeGesture={id:e.pointerId,startX:e.clientX,startY:e.clientY};return}
   e.preventDefault();$('#screenWrap').setPointerCapture?.(e.pointerId);
-  state.pointers.set(e.pointerId,{x:e.clientX,y:e.clientY,startX:e.clientX,startY:e.clientY,time:performance.now()});
+  const now=performance.now();
+  state.pointers.set(e.pointerId,{x:e.clientX,y:e.clientY,startX:e.clientX,startY:e.clientY,time:now});
   if(state.pointers.size===2){clearLongPress();clearMouseDragArm();state.gesture=pinchSnapshot();return}
   if(state.pointers.size>2)return;
-  state.lastPointer={x:e.clientX,y:e.clientY,time:performance.now()};
+  state.lastPointer={x:e.clientX,y:e.clientY,time:now};
   if(settings.pointerMode==='mouse'){
-    clearMouseDragArm();const pid=e.pointerId;
-    state.mouseDragArmTimer=setTimeout(()=>{if(state.pointers.has(pid)&&!state.moved&&!state.longPressFired)state.mouseDragArmed=true},140);
-  }
-  const point=settings.pointerMode==='mouse'?state.cursor:normalizedPoint(e.clientX,e.clientY);startLongPress(point);
+    const lp=state.lastTapPos;
+    const doubleTap=!!lp&&now-state.lastTapAt<=360&&Math.hypot(e.clientX-lp.x,e.clientY-lp.y)<=30;
+    if(doubleTap){
+      state.doubleTapDrag=true;state.dragging=true;state.lastTapAt=0;state.lastTapPos=null;
+      clearLongPress();clearMouseDragArm();sendMouse('down',state.cursor,{button:'left'});
+    }else{
+      clearMouseDragArm();const pid=e.pointerId;
+      state.mouseDragArmTimer=setTimeout(()=>{if(state.pointers.has(pid)&&!state.moved&&!state.longPressFired&&!state.doubleTapDrag)state.mouseDragArmed=true},190);
+      startLongPress(state.cursor);
+    }
+  }else startLongPress(normalizedPoint(e.clientX,e.clientY));
 }
 function pointerMove(e){
   if(state.edgeGesture&&state.edgeGesture.id===e.pointerId){e.preventDefault();if(e.clientX-state.edgeGesture.startX>42){openEdgeMenu();state.edgeGesture=null}return}
@@ -510,13 +588,13 @@ function pointerMove(e){
   e.preventDefault();const prev={x:ptr.x,y:ptr.y};ptr.x=e.clientX;ptr.y=e.clientY;
   if(state.pointers.size>=2){clearLongPress();clearMouseDragArm();handlePinch();return}
   const dx=e.clientX-prev.x,dy=e.clientY-prev.y;
-  if(Math.hypot(e.clientX-ptr.startX,e.clientY-ptr.startY)>8){state.moved=true;clearLongPress()}
+  if(Math.hypot(e.clientX-ptr.startX,e.clientY-ptr.startY)>6){state.moved=true;clearLongPress()}
   if(settings.pointerMode==='mouse'){
     if(!state.moved)return;
     const before={x:state.cursor.x,y:state.cursor.y},wr=$('#screenWrap').getBoundingClientRect();
     if(state.mouseDragArmed&&!state.dragging){state.dragging=true;sendMouse('down',before,{button:'left'})}
-    state.cursor.x=Math.max(0,Math.min(1,state.cursor.x+dx/Math.max(180,wr.width*.9)));
-    state.cursor.y=Math.max(0,Math.min(1,state.cursor.y+dy/Math.max(180,wr.height*.9)));
+    state.cursor.x=Math.max(0,Math.min(1,state.cursor.x+dx/Math.max(150,wr.width*.78)));
+    state.cursor.y=Math.max(0,Math.min(1,state.cursor.y+dy/Math.max(150,wr.height*.78)));
     sendMouse('move',state.cursor,state.dragging?{button:'left',buttons:1}:{});
     if(state.zoom>1)followCursorPan();else updateCursorVisual();
   }else if(state.moved){
@@ -533,11 +611,17 @@ function pointerUp(e){
   if(wasMulti){if(state.pointers.size<2)state.gesture=null;clearMouseDragArm();return}
   if(state.longPressFired){resetGestureFlags();return}
   if(settings.pointerMode==='mouse'){
-    if(state.dragging){sendMouse('up',state.cursor,{button:'left'});setTimeout(requestSharpFrame,80)}
-    else if(!state.moved){clickAt(state.cursor,'left');probeTextFocus(state.cursor)}
+    if(state.dragging){
+      sendMouse('up',state.cursor,{button:'left'});requestImmediateFrame(state.doubleTapDrag?'double_drag':'drag');
+      if(!state.moved&&state.doubleTapDrag)probeTextFocus(state.cursor);
+      state.lastTapAt=0;state.lastTapPos=null;
+    }else if(!state.moved){
+      clickAt(state.cursor,'left');probeTextFocus(state.cursor);
+      state.lastTapAt=performance.now();state.lastTapPos={x:e.clientX,y:e.clientY};
+    }else{state.lastTapAt=0;state.lastTapPos=null}
   }else{
     const point=normalizedPoint(e.clientX,e.clientY);
-    if(state.dragging){sendMouse('move',point,{button:'left',buttons:1});sendMouse('up',point,{button:'left'});setTimeout(requestSharpFrame,80)}
+    if(state.dragging){sendMouse('move',point,{button:'left',buttons:1});sendMouse('up',point,{button:'left'});requestImmediateFrame('touch_drag')}
     else if(!state.moved){clickAt(point,'left');probeTextFocus(point)}
   }
   resetGestureFlags();
@@ -546,7 +630,7 @@ function pointerCancel(e){
   if(state.edgeGesture&&state.edgeGesture.id===e.pointerId){state.edgeGesture=null;return}
   const ptr=state.pointers.get(e.pointerId);
   if(ptr&&state.dragging){const point=settings.pointerMode==='mouse'?state.cursor:normalizedPoint(ptr.x,ptr.y);sendMouse('up',point,{button:'left'})}
-  state.pointers.delete(e.pointerId);resetGestureFlags();
+  state.pointers.delete(e.pointerId);flushMouseMove();resetGestureFlags();
 }
 
 function pinchSnapshot(){
@@ -583,16 +667,9 @@ function wheel(e){
 
 function requestSharpFrame(){
   clearTimeout(state.sharpTimer);
-  state.sharpTimer=setTimeout(()=>{
-    if(!state.connected)return;
-    let w=2304,h=1296;
-    if(settings.quality==='speed'){w=1600;h=900}
-    if(settings.quality==='quality'){w=2880;h=1620}
-    if(state.zoom>=1.35){w=Math.max(w,2880);h=Math.max(h,1620)}
-    if(state.zoom>=2.2){w=Math.max(w,3840);h=Math.max(h,2160)}
-    wsSend({type:'screen_profile',width:w,height:h,fit:false,reason:'zoom'});
-  },180);
+  state.sharpTimer=setTimeout(()=>sendAdaptiveStreamProfile(state.zoom>1?'zoom':'interaction'),120);
 }
+
 function openNativeKeyboard(mode='text',automatic=false){
   if(!state.connected)return;
   $('#keyboardSheet').classList.add('hidden');
@@ -768,7 +845,7 @@ function fullscreenChanged(){
 document.addEventListener('fullscreenchange',fullscreenChanged);document.addEventListener('webkitfullscreenchange',fullscreenChanged);
 window.addEventListener('resize',()=>requestAnimationFrame(()=>{clampPan();applyTransform();requestSharpFrame()}));
 window.addEventListener('orientationchange',()=>setTimeout(()=>{resetViewTransform();requestSharpFrame()},160));
-window.addEventListener('pagehide',()=>{releaseModifiers();try{state.ws?.close()}catch{}});
+window.addEventListener('pagehide',()=>{releaseModifiers();flushMouseMove();try{state.ws?.close()}catch{}});
 if('serviceWorker'in navigator)window.addEventListener('load',()=>navigator.serviceWorker.register('sw.js').catch(()=>{}));
 if(store.get('hideInstall',false))$('#installCard').style.display='none';
 

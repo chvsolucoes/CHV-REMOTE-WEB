@@ -49,8 +49,10 @@ function qProfile(){
          settings.quality==='speed'?[1280,720,'contain']:[1600,900,'contain'];
 }
 function streamTuning(){
-  return settings.quality==='quality'?{fps:26,jpeg_quality:84,subsampling:2}:
-         settings.quality==='speed'?{fps:30,jpeg_quality:68,subsampling:2}:{fps:30,jpeg_quality:76,subsampling:2};
+  // Keep the encoder below saturation. A saturated JPEG encoder feels slower than
+  // a slightly lower FPS stream because pointer/input packets wait behind frames.
+  return settings.quality==='quality'?{fps:24,jpeg_quality:82,subsampling:2}:
+         settings.quality==='speed'?{fps:36,jpeg_quality:60,subsampling:2}:{fps:30,jpeg_quality:72,subsampling:2};
 }
 function adaptiveDimensions(){
   let [w,h]=qProfile();
@@ -70,18 +72,21 @@ function noteInteraction(){
   clearTimeout(state.interactionBurstTimer);
   if(!state.interactionBurst){
     state.interactionBurst=true;
-    // Durante mouse/arraste, privilegia latência em vez de mandar JPEG grande demais.
+    // 720p is still readable on a phone, while 38 FPS leaves CPU/network headroom
+    // for mouse packets. 45 FPS at 576p was able to saturate slower Windows hosts.
     wsSend({type:'screen_profile',width:1280,height:720,fit:false,reason:'interactive'});
-    wsSend({type:'stream_tuning',width:1280,height:720,fps:35,jpeg_quality:62,subsampling:2,reason:'interactive'});
+    wsSend({type:'stream_tuning',width:1280,height:720,fps:38,jpeg_quality:58,subsampling:2,reason:'interactive'});
   }
   state.interactionBurstTimer=setTimeout(()=>{state.interactionBurst=false;sendAdaptiveStreamProfile('settled')},320);
 }
 function postInputRefresh(reason='input'){
+  // request_frame is an event, not a frame queue. Coalescing avoids repeatedly
+  // waking the encoder after one click/keystroke and keeps input ahead of video.
   for(const t of state.postInputTimers)clearTimeout(t);state.postInputTimers=[];
-  for(const ms of [0,55,130,260,520,900])state.postInputTimers.push(setTimeout(()=>{
+  for(const ms of [0,85,220])state.postInputTimers.push(setTimeout(()=>{
     if(state.connected)wsSend({type:'request_frame',reason});
   },ms));
-  state.postInputTimers.push(setTimeout(()=>sendAdaptiveStreamProfile('post_'+reason),940));
+  state.postInputTimers.push(setTimeout(()=>sendAdaptiveStreamProfile('post_'+reason),360));
 }
 
 function uniqueCodes(){
@@ -262,6 +267,7 @@ function handleMessage(e,code,secret,timeout){
       return;
     }
     if(o.type==='cursor_state'){applyCursorState(o);return}
+    if(o.type==='secure_attention_result'){toast(o.ok?'Ctrl + Alt + Del executado':'Não foi possível executar Ctrl + Alt + Del neste computador');postInputRefresh('secure_attention_result');return}
     if(o.type==='file_list'){renderRemoteFileList(o);return}
     if(o.type==='file_list_error'){toast('Não foi possível abrir essa pasta no computador');return}
     if(o.type==='file_offer'){acceptFile(o);return}
@@ -344,15 +350,17 @@ function clickAt(p,button='left'){
   sendMouse('down',p,{button});sendMouse('up',p,{button});
   postInputRefresh(button==='right'?'right_click':'click');
 }
-function armKeyboardProbe(){
+function armKeyboardProbe(numeric=false){
   const input=$('#nativeKeyboardInput');
   clearTimeout(state.focusProbeTimer);state.keyboardProbeArmed=true;
-  input.setAttribute('inputmode','none');input.value='';
-  try{input.focus({preventScroll:true})}catch{}
+  // Never use inputmode=none here. iOS remembers the suppressed keyboard for the
+  // trusted tap and may refuse a later asynchronous refocus from text_focus.
+  input.setAttribute('inputmode',numeric?'numeric':'text');input.value='';
+  try{input.focus({preventScroll:true});input.setSelectionRange(0,0)}catch{}
   state.focusProbeTimer=setTimeout(()=>{
     if(!state.keyboardProbeArmed)return;
     state.keyboardProbeArmed=false;try{input.blur()}catch{}
-  },950);
+  },850);
 }
 function focusRemoteFieldView(){
   if(!state.connected)return;
@@ -365,20 +373,29 @@ function focusRemoteFieldView(){
   if(currentX<f.wrapW*.15||currentX>f.wrapW*.85)state.panX+=desiredX-currentX;
   clampPan();applyTransform();requestSharpFrame();
 }
-function openKeyboardForCursor(numeric=false){
+function openKeyboardForCursor(numeric=false,force=false){
   if(!state.connected)return false;
-  const likely=state.cursorEditable||state.cursorShape==='ibeam';
+  const likely=force||state.cursorEditable||state.cursorShape==='ibeam';
   if(!likely)return false;
-  clearTimeout(state.focusProbeTimer);state.keyboardProbeArmed=false;
-  focusRemoteFieldView();
+  clearTimeout(state.focusProbeTimer);state.keyboardProbeArmed=true;
   const input=$('#nativeKeyboardInput');
   input.value='';input.setAttribute('inputmode',numeric?'numeric':'text');
+  // Must run in pointerdown/up from the physical touch. This is what makes the
+  // native iPhone/Android keyboard appear reliably instead of waiting on the host.
   try{input.focus({preventScroll:true});input.setSelectionRange(0,0)}catch{}
-  return true;
+  focusRemoteFieldView();
+  state.focusProbeTimer=setTimeout(()=>{
+    if(!state.keyboardProbeArmed)return;
+    state.keyboardProbeArmed=false;try{input.blur()}catch{}
+  },850);
+  return document.activeElement===input;
 }
 function probeTextFocus(p,alreadyOpened=false){
   if(!state.connected)return;
-  state.lastFocusProbeAt=Date.now();if(!alreadyOpened)armKeyboardProbe();
+  state.lastFocusProbeAt=Date.now();
+  // If the cursor already says I-beam, keep the trusted-gesture focus alive. For
+  // an unknown target, wait for the host instead of flashing a keyboard on buttons.
+  if(!alreadyOpened&&(state.cursorEditable||state.cursorShape==='ibeam'))armKeyboardProbe(state.cursorNumeric);
   wsSend({type:'text_focus_probe',x:p.x,y:p.y});
 }
 function resolveTextFocus(editable,numeric=false){
@@ -396,9 +413,9 @@ function tapKey(k){sendKey(k,true);sendKey(k,false)}
 function typeText(t){for(const ch of t)tapKey(ch)}
 function sendCtrlAltDel(){
   if(!state.connected)return;
-  sendKey('ctrl',true);sendKey('alt',true);sendKey('delete',true);
-  setTimeout(()=>{sendKey('delete',false);sendKey('alt',false);sendKey('ctrl',false)},120);
-  toast('Ctrl + Alt + Del enviado');
+  wsSend({type:'secure_attention_request',sequence:'ctrl_alt_del'});
+  postInputRefresh('secure_attention');
+  toast('Solicitando Ctrl + Alt + Del ao computador remoto…');
 }
 function setFeature(feature,enabled){
   if(!state.canAdmin){toast('Esse recurso foi bloqueado pelo computador remoto');return false}
@@ -568,14 +585,19 @@ function cursorMarkup(shape){
   if(shape==='size_all')return '<svg viewBox="0 0 44 44"><path d="M22 3v38M3 22h38M22 3l-6 7M22 3l6 7M22 41l-6-7M22 41l6-7M3 22l7-6M3 22l7 6M41 22l-7-6M41 22l-7 6" fill="none" stroke="white" stroke-width="2.6"/></svg>';
   return '<svg viewBox="0 0 32 42"><path d="M3 2 L3 32 L11 24 L17 39 L23 36 L17 22 L29 22 Z" fill="white" stroke="#111" stroke-width="2.2" stroke-linejoin="round"/></svg>';
 }
+function normalizeCursorShape(value){
+  const raw=String(value||'arrow').toLowerCase().replace(/[\s-]+/g,'_');
+  const aliases={default:'arrow',normal:'arrow',pointer:'hand',link:'hand',hand2:'hand',text:'ibeam',i_beam:'ibeam',beam:'ibeam',busy:'wait',loading:'wait',progress:'appstarting',working:'appstarting',crosshair:'cross',sizewe:'size_we',ew_resize:'size_we',sizens:'size_ns',ns_resize:'size_ns',sizeall:'size_all',move:'size_all'};
+  return aliases[raw]||raw;
+}
 function applyCursorState(o){
-  const shape=String(o?.shape||'arrow').toLowerCase();
+  const shape=normalizeCursorShape(o?.shape||'arrow');
   state.cursorShape=shape;state.cursorEditable=!!(o?.editable||shape==='ibeam');state.cursorNumeric=!!o?.numeric;
   const c=$('#mouseCursor');c.dataset.shape=shape;c.innerHTML=cursorMarkup(shape);updateCursorVisual();
 }
 function probeCursorState(force=false){
   if(!state.connected||settings.pointerMode!=='mouse')return;
-  const now=performance.now();if(!force&&now-state.cursorProbeAt<90)return;state.cursorProbeAt=now;
+  const now=performance.now();if(!force&&now-state.cursorProbeAt<45)return;state.cursorProbeAt=now;
   wsSend({type:'cursor_probe',x:state.cursor.x,y:state.cursor.y});
 }
 function updateCursorVisual(){
@@ -637,17 +659,24 @@ function pointerDown(e){
   if(state.pointers.size>2)return;
   state.lastPointer={x:e.clientX,y:e.clientY,time:now};
   if(settings.pointerMode==='mouse'){
+    // Prime the phone keyboard on pointer-down while Safari still treats this as a
+    // user gesture. It is harmless for non-editable targets because it only runs
+    // when the host's live cursor is already an I-beam/editable cursor.
+    if(state.cursorEditable||state.cursorShape==='ibeam')openKeyboardForCursor(state.cursorNumeric);
     const lp=state.lastTapPos;
     const doubleTap=!!lp&&now-state.lastTapAt<=420&&Math.hypot(e.clientX-lp.x,e.clientY-lp.y)<=38;
     if(doubleTap){
       state.doubleTapDrag=true;state.dragging=true;state.lastTapAt=0;state.lastTapPos=null;
-      clearLongPress();clearMouseDragArm();sendMouse('down',state.cursor,{button:'left'});
+      clearLongPress();clearMouseDragArm();flushMouseMove();sendMouse('down',state.cursor,{button:'left',buttons:1});
     }else{
       clearMouseDragArm();const pid=e.pointerId;
       state.mouseDragArmTimer=setTimeout(()=>{if(state.pointers.has(pid)&&!state.moved&&!state.longPressFired&&!state.doubleTapDrag)state.mouseDragArmed=true},190);
       startLongPress(state.cursor);
     }
-  }else startLongPress(normalizedPoint(e.clientX,e.clientY));
+  }else{
+    armKeyboardProbe(false);
+    startLongPress(normalizedPoint(e.clientX,e.clientY));
+  }
 }
 function pointerMove(e){
   if(state.edgeGesture&&state.edgeGesture.id===e.pointerId){e.preventDefault();if(e.clientX-state.edgeGesture.startX>42){openEdgeMenu();state.edgeGesture=null}return}
@@ -683,13 +712,14 @@ function pointerUp(e){
       if(!state.moved&&state.doubleTapDrag)probeTextFocus(state.cursor);
       state.lastTapAt=0;state.lastTapPos=null;
     }else if(!state.moved){
-      const keyboardOpened=openKeyboardForCursor(state.cursorNumeric);clickAt(state.cursor,'left');probeTextFocus(state.cursor,keyboardOpened);
+      const keyboardOpened=(document.activeElement===$('#nativeKeyboardInput'))||openKeyboardForCursor(state.cursorNumeric);
+      clickAt(state.cursor,'left');probeTextFocus(state.cursor,keyboardOpened);
       state.lastTapAt=performance.now();state.lastTapPos={x:e.clientX,y:e.clientY};
     }else{state.lastTapAt=0;state.lastTapPos=null}
   }else{
     const point=normalizedPoint(e.clientX,e.clientY);
     if(state.dragging){sendMouse('move',point,{button:'left',buttons:1});sendMouse('up',point,{button:'left'});postInputRefresh('touch_drag')}
-    else if(!state.moved){clickAt(point,'left');probeTextFocus(point,false)}
+    else if(!state.moved){const keyboardOpened=openKeyboardForCursor(false);clickAt(point,'left');probeTextFocus(point,keyboardOpened)}
   }
   resetGestureFlags();
 }
@@ -809,7 +839,7 @@ function openRemoteFiles(){
   if(!state.canAdmin)return toast('Gerenciador de arquivos bloqueado pelo computador remoto');
   state.remoteSelected.clear();openSheet('fileBrowserSheet');requestRemotePath('');
 }
-function requestRemotePath(path=''){state.remoteSelected.clear();wsSend({type:'file_list_request',path:String(path||'')});$('#remoteFileList').innerHTML='<div class="file-loading">Carregando…</div>'}
+function requestRemotePath(path=''){state.remoteSelected.clear();wsSend({type:'file_list_request',path:String(path||''),scope:path?'explicit':'default'});$('#remoteFileList').innerHTML='<div class="file-loading">Carregando…</div>'}
 function renderRemoteFileList(o){
   state.remotePath=String(o.path||'');state.remoteParent=String(o.parent||'');state.remoteEntries=Array.isArray(o.entries)?o.entries:[];state.remoteSelected.clear();
   $('#remotePath').textContent=state.remotePath||'Este PC';$('#remoteUpBtn').disabled=!state.remotePath;
@@ -980,3 +1010,16 @@ renderLists();applyPointerMode(settings.pointerMode);renderCurrentPcStatus();upd
 refreshRelayHealth().then(()=>{refreshPresence();updateConnectButton()});
 setInterval(()=>refreshRelayHealth().then(updateConnectButton),10000);
 setInterval(refreshPresence,8000);
+
+
+// CHV Remote Web 2.9: keep the remote edit field visible when the iOS/Android
+// software keyboard changes the visual viewport height.
+if(window.visualViewport){
+  let vvTimer=0;
+  window.visualViewport.addEventListener('resize',()=>{
+    clearTimeout(vvTimer);
+    vvTimer=setTimeout(()=>{
+      if(state.connected&&document.activeElement===$('#nativeKeyboardInput')&&(state.cursorEditable||state.cursorShape==='ibeam'))focusRemoteFieldView();
+    },45);
+  });
+}

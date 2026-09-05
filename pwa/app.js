@@ -70,11 +70,11 @@ function noteInteraction(){
   clearTimeout(state.interactionBurstTimer);
   if(!state.interactionBurst){
     state.interactionBurst=true;
-    // Durante mouse/arraste, privilegia latência em vez de mandar JPEG grande demais.
-    wsSend({type:'screen_profile',width:1280,height:720,fit:false,reason:'interactive'});
-    wsSend({type:'stream_tuning',width:1280,height:720,fps:35,jpeg_quality:62,subsampling:2,reason:'interactive'});
+    // Perfil de baixa latência: reduz bytes enquanto move/arrasta e volta à qualidade normal logo depois.
+    wsSend({type:'screen_profile',width:1024,height:576,fit:false,reason:'interactive'});
+    wsSend({type:'stream_tuning',width:1024,height:576,fps:45,jpeg_quality:55,subsampling:2,reason:'interactive'});
   }
-  state.interactionBurstTimer=setTimeout(()=>{state.interactionBurst=false;sendAdaptiveStreamProfile('settled')},320);
+  state.interactionBurstTimer=setTimeout(()=>{state.interactionBurst=false;sendAdaptiveStreamProfile('settled')},220);
 }
 function postInputRefresh(reason='input'){
   for(const t of state.postInputTimers)clearTimeout(t);state.postInputTimers=[];
@@ -262,6 +262,7 @@ function handleMessage(e,code,secret,timeout){
       return;
     }
     if(o.type==='cursor_state'){applyCursorState(o);return}
+    if(o.type==='secure_attention_result'){toast(o.ok?'Ctrl + Alt + Del executado':'Não foi possível executar Ctrl + Alt + Del neste computador');postInputRefresh('secure_attention_result');return}
     if(o.type==='file_list'){renderRemoteFileList(o);return}
     if(o.type==='file_list_error'){toast('Não foi possível abrir essa pasta no computador');return}
     if(o.type==='file_offer'){acceptFile(o);return}
@@ -368,12 +369,16 @@ function focusRemoteFieldView(){
 function openKeyboardForCursor(numeric=false){
   if(!state.connected)return false;
   const likely=state.cursorEditable||state.cursorShape==='ibeam';
-  if(!likely)return false;
-  clearTimeout(state.focusProbeTimer);state.keyboardProbeArmed=false;
-  focusRemoteFieldView();
+  clearTimeout(state.focusProbeTimer);state.keyboardProbeArmed=true;
   const input=$('#nativeKeyboardInput');
   input.value='';input.setAttribute('inputmode',numeric?'numeric':'text');
+  // O foco ocorre dentro do gesto físico: no iOS isso permite abrir o teclado antes da resposta assíncrona do host.
   try{input.focus({preventScroll:true});input.setSelectionRange(0,0)}catch{}
+  if(likely)focusRemoteFieldView();
+  state.focusProbeTimer=setTimeout(()=>{
+    if(!state.keyboardProbeArmed)return;
+    state.keyboardProbeArmed=false;try{input.blur()}catch{}
+  },700);
   return true;
 }
 function probeTextFocus(p,alreadyOpened=false){
@@ -396,9 +401,9 @@ function tapKey(k){sendKey(k,true);sendKey(k,false)}
 function typeText(t){for(const ch of t)tapKey(ch)}
 function sendCtrlAltDel(){
   if(!state.connected)return;
-  sendKey('ctrl',true);sendKey('alt',true);sendKey('delete',true);
-  setTimeout(()=>{sendKey('delete',false);sendKey('alt',false);sendKey('ctrl',false)},120);
-  toast('Ctrl + Alt + Del enviado');
+  wsSend({type:'secure_attention_request',sequence:'ctrl_alt_del'});
+  postInputRefresh('secure_attention');
+  toast('Solicitando Ctrl + Alt + Del ao computador remoto…');
 }
 function setFeature(feature,enabled){
   if(!state.canAdmin){toast('Esse recurso foi bloqueado pelo computador remoto');return false}
@@ -568,14 +573,19 @@ function cursorMarkup(shape){
   if(shape==='size_all')return '<svg viewBox="0 0 44 44"><path d="M22 3v38M3 22h38M22 3l-6 7M22 3l6 7M22 41l-6-7M22 41l6-7M3 22l7-6M3 22l7 6M41 22l-7-6M41 22l-7 6" fill="none" stroke="white" stroke-width="2.6"/></svg>';
   return '<svg viewBox="0 0 32 42"><path d="M3 2 L3 32 L11 24 L17 39 L23 36 L17 22 L29 22 Z" fill="white" stroke="#111" stroke-width="2.2" stroke-linejoin="round"/></svg>';
 }
+function normalizeCursorShape(value){
+  const raw=String(value||'arrow').toLowerCase().replace(/[\s-]+/g,'_');
+  const aliases={default:'arrow',normal:'arrow',pointer:'hand',link:'hand',hand2:'hand',text:'ibeam',i_beam:'ibeam',beam:'ibeam',busy:'wait',loading:'wait',progress:'appstarting',working:'appstarting',crosshair:'cross',sizewe:'size_we',ew_resize:'size_we',sizens:'size_ns',ns_resize:'size_ns',sizeall:'size_all',move:'size_all'};
+  return aliases[raw]||raw;
+}
 function applyCursorState(o){
-  const shape=String(o?.shape||'arrow').toLowerCase();
+  const shape=normalizeCursorShape(o?.shape||'arrow');
   state.cursorShape=shape;state.cursorEditable=!!(o?.editable||shape==='ibeam');state.cursorNumeric=!!o?.numeric;
   const c=$('#mouseCursor');c.dataset.shape=shape;c.innerHTML=cursorMarkup(shape);updateCursorVisual();
 }
 function probeCursorState(force=false){
   if(!state.connected||settings.pointerMode!=='mouse')return;
-  const now=performance.now();if(!force&&now-state.cursorProbeAt<90)return;state.cursorProbeAt=now;
+  const now=performance.now();if(!force&&now-state.cursorProbeAt<45)return;state.cursorProbeAt=now;
   wsSend({type:'cursor_probe',x:state.cursor.x,y:state.cursor.y});
 }
 function updateCursorVisual(){
@@ -689,7 +699,7 @@ function pointerUp(e){
   }else{
     const point=normalizedPoint(e.clientX,e.clientY);
     if(state.dragging){sendMouse('move',point,{button:'left',buttons:1});sendMouse('up',point,{button:'left'});postInputRefresh('touch_drag')}
-    else if(!state.moved){clickAt(point,'left');probeTextFocus(point,false)}
+    else if(!state.moved){const keyboardOpened=openKeyboardForCursor(false);clickAt(point,'left');probeTextFocus(point,keyboardOpened)}
   }
   resetGestureFlags();
 }
@@ -809,7 +819,7 @@ function openRemoteFiles(){
   if(!state.canAdmin)return toast('Gerenciador de arquivos bloqueado pelo computador remoto');
   state.remoteSelected.clear();openSheet('fileBrowserSheet');requestRemotePath('');
 }
-function requestRemotePath(path=''){state.remoteSelected.clear();wsSend({type:'file_list_request',path:String(path||'')});$('#remoteFileList').innerHTML='<div class="file-loading">Carregando…</div>'}
+function requestRemotePath(path=''){state.remoteSelected.clear();wsSend({type:'file_list_request',path:String(path||''),scope:path?'explicit':'default'});$('#remoteFileList').innerHTML='<div class="file-loading">Carregando…</div>'}
 function renderRemoteFileList(o){
   state.remotePath=String(o.path||'');state.remoteParent=String(o.parent||'');state.remoteEntries=Array.isArray(o.entries)?o.entries:[];state.remoteSelected.clear();
   $('#remotePath').textContent=state.remotePath||'Este PC';$('#remoteUpBtn').disabled=!state.remotePath;

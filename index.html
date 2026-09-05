@@ -7,16 +7,18 @@
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <meta name="apple-mobile-web-app-title" content="CHV Remote">
+  <meta name="mobile-web-app-capable" content="yes">
   <title>CHV Remote</title>
   <link rel="manifest" href="manifest.webmanifest">
-  <link rel="apple-touch-icon" href="icon.svg">
+  <link rel="apple-touch-icon" sizes="180x180" href="icon-180.png">
+  <link rel="icon" type="image/svg+xml" href="icon.svg">
   <link rel="stylesheet" href="app.css">
 </head>
 <body>
   <div id="app">
     <header class="topbar">
-      <div class="brand"><img src="icon.svg" alt=""><div><strong>CHV Remote</strong><span>Controle remoto seguro</span></div></div>
-      <div id="relayBadge" class="badge"><i></i><span>Verificando servidor…</span></div>
+      <div class="brand"><img src="icon-180.png" alt="CHV Remote"><div><strong>CHV Remote</strong><span>Controle remoto seguro</span></div></div>
+      <div id="relayBadge" class="badge checking"><i></i><span>Verificando servidor…</span></div>
     </header>
 
     <main>
@@ -29,27 +31,30 @@
         <div class="card connect-card">
           <div class="card-title"><span class="icon">▣</span><div><strong>Conexão remota</strong><small>Informe os dados do computador</small></div></div>
           <label>ID de 6 dígitos</label>
-          <input id="remoteId" inputmode="numeric" maxlength="6" autocomplete="one-time-code" placeholder="000000">
+          <div class="id-with-status">
+            <input id="remoteId" inputmode="numeric" maxlength="6" autocomplete="one-time-code" placeholder="000000">
+            <div id="remoteStatus" class="pc-status unknown" title="Status do computador"><i></i></div>
+          </div>
+          <div id="remoteStatusText" class="remote-status-text">Digite o ID para verificar o computador</div>
           <label>Senha</label>
           <div class="password-row"><input id="remotePassword" type="password" maxlength="64" autocomplete="off" placeholder="Senha do CHV Remote"><button id="showPassword" class="ghost" aria-label="Mostrar senha">◉</button></div>
-          <div class="mode-row"><button class="seg active" data-mode="basic">Básico</button><button class="seg" data-mode="admin">Administrador</button></div>
           <button id="connectBtn" class="primary" disabled>Conectar</button>
           <div id="connectStatus" class="status-line">Pronto para conectar</div>
         </div>
 
         <div id="installCard" class="card install-card">
           <strong>Instalar no iPhone</strong>
-          <p>No Safari, toque em <b>Compartilhar</b> e depois em <b>Adicionar à Tela de Início</b>.</p>
+          <p>No Safari, toque em <b>Compartilhar</b> e depois em <b>Adicionar à Tela de Início</b>. O ícone oficial do CHV Remote será usado.</p>
           <button id="hideInstall" class="secondary">Entendi</button>
         </div>
 
-        <div class="section-head"><h2>Acesso rápido</h2><button id="clearFavorites" class="text-btn">Limpar</button></div>
-        <div id="favorites" class="list empty"><span>Nenhum favorito ainda.</span></div>
+        <div class="section-head"><h2>Acesso rápido</h2><button id="clearQuick" class="text-btn">Limpar</button></div>
+        <div id="quickAccess" class="list empty"><span>Nenhuma conexão recente.</span></div>
       </section>
 
-      <section id="historyView" class="view">
-        <div class="section-head"><h1>Histórico</h1><button id="clearHistory" class="text-btn">Limpar</button></div>
-        <div id="history" class="list empty"><span>Nenhuma conexão ainda.</span></div>
+      <section id="favoritesView" class="view">
+        <div class="section-head"><h1>Favoritos</h1><button id="clearFavorites" class="text-btn">Limpar</button></div>
+        <div id="favorites" class="list empty"><span>Nenhum favorito ainda.</span></div>
       </section>
 
       <section id="settingsView" class="view">
@@ -57,43 +62,54 @@
         <div class="card settings-card">
           <label>Qualidade da imagem</label>
           <select id="quality"><option value="balanced">Equilibrada</option><option value="quality">Alta qualidade</option><option value="speed">Maior velocidade</option></select>
-          <div class="setting-row"><div><strong>Salvar senhas</strong><small>Armazena apenas neste iPhone</small></div><input id="savePasswords" type="checkbox"></div>
-          <div class="setting-row"><div><strong>Áudio do sistema</strong><small>Ativar automaticamente em acesso Administrador</small></div><input id="autoAudio" type="checkbox"></div>
+          <div class="setting-row"><div><strong>Salvar senhas</strong><small>Armazena somente neste dispositivo</small></div><input id="savePasswords" type="checkbox"></div>
+          <div class="setting-row"><div><strong>Áudio do sistema</strong><small>Ativar automaticamente ao conectar</small></div><input id="autoAudio" type="checkbox"></div>
           <div class="setting-row"><div><strong>Microfone remoto</strong><small>Ouvir o microfone do computador remoto</small></div><input id="autoMic" type="checkbox"></div>
+          <div class="setting-row"><div><strong>Modo de controle padrão</strong><small>Mouse mostra a seta; Touch controla diretamente</small></div>
+            <select id="pointerMode"><option value="mouse">Mouse</option><option value="touch">Touch Screen</option></select>
+          </div>
         </div>
-        <div class="card about"><strong>CHV Remote Web App</strong><p>Versão PWA 2.0.0 alpha1 • iPhone/iPad • conexão via CHV Relay.</p></div>
+        <div class="card about"><strong>CHV Remote Web App</strong><p>Versão PWA 2.1.0 • conexão via CHV Relay • presença dos computadores em tempo real.</p></div>
       </section>
 
       <section id="sessionView" class="view session-view">
         <div class="session-bar">
-          <button id="backSession" class="round">‹</button>
+          <button id="backSession" class="round" aria-label="Voltar">‹</button>
           <div><strong id="sessionTitle">CHV Remote</strong><small id="sessionMeta">Conectando…</small></div>
           <button id="disconnectBtn" class="danger-small">Desconectar</button>
         </div>
+
         <div id="screenWrap" class="screen-wrap">
-          <img id="remoteScreen" draggable="false" alt="Tela remota">
+          <div id="screenViewport" class="screen-viewport">
+            <img id="remoteScreen" draggable="false" alt="Tela remota">
+          </div>
+          <div id="mouseCursor" class="remote-cursor" aria-hidden="true">➤</div>
           <div id="screenPlaceholder"><div class="spinner"></div><span>Aguardando imagem do computador…</span></div>
           <div class="metrics"><span id="fpsMetric">0 FPS</span><span id="mbpsMetric">0 Mbps</span></div>
+          <div id="zoomBadge" class="zoom-badge hidden">100%</div>
+          <div id="controlBadge" class="control-badge">Mouse</div>
         </div>
+
         <div class="toolbar">
+          <button id="modeBtn">➤<span>Mouse</span></button>
           <button id="keyboardBtn">⌨<span>Teclado</span></button>
-          <button id="copyBtn">⇩<span>Copiar</span></button>
-          <button id="pasteBtn">⇧<span>Colar</span></button>
-          <button id="fileBtn">↥<span>Arquivo</span></button>
+          <button id="cadBtn">⌘<span>Ctrl Alt Del</span></button>
+          <button id="fileBtn">↥<span>Arquivos</span></button>
           <button id="audioBtn">♫<span>Áudio</span></button>
           <button id="micBtn">◉<span>Microfone</span></button>
+          <button id="fullscreenBtn">⛶<span>Tela cheia</span></button>
         </div>
         <input id="fileInput" type="file" hidden multiple>
+        <input id="nativeKeyboardInput" class="native-keyboard-input" type="text" autocomplete="off" autocorrect="off" autocapitalize="none" spellcheck="false" aria-label="Teclado remoto">
       </section>
     </main>
 
     <nav id="bottomNav" class="bottom-nav">
       <button data-view="homeView" class="active"><span>⌁</span>Conectar</button>
-      <button data-view="historyView"><span>◷</span>Histórico</button>
+      <button data-view="favoritesView"><span>★</span>Favoritos</button>
       <button data-view="settingsView"><span>⚙</span>Ajustes</button>
     </nav>
 
-    <div id="keyboardSheet" class="sheet hidden"><div class="sheet-card"><div class="sheet-head"><strong>Teclado remoto</strong><button id="closeKeyboard">Fechar</button></div><textarea id="keyboardText" rows="3" placeholder="Digite aqui…"></textarea><div class="key-actions"><button data-key="ENTER">Enter</button><button data-key="BACKSPACE">⌫</button><button data-key="ESC">Esc</button><button id="sendText" class="primary">Enviar texto</button></div></div></div>
     <div id="toast" class="toast hidden"></div>
   </div>
   <script src="app.js"></script>

@@ -40,14 +40,17 @@ jobs:
           for f in index.html app.js app.css sw.js manifest.webmanifest icon.svg icon-180.png; do
             cp "source/pwa/$f" "publish/$f"
           done
-          grep -q "chv-remote-pwa-v2.9.0" publish/sw.js
+          grep -q "chv-remote-pwa-v3.0.0" publish/sw.js
           if grep -Fq "setAttribute('inputmode','none')" publish/app.js; then
             echo 'mobile keyboard suppression still present'
             exit 1
           fi
-          grep -q "visualViewport" publish/app.js
+          grep -q "syncKeyboardViewport" publish/app.js
+          grep -q "keyboard-visible" publish/app.css
+          grep -q "reveal_received_folder_request" publish/app.js
+          grep -q "sentFileSheet" publish/index.html
           grep -q "fps:38" publish/app.js
-          echo CHV_WEB29_PUBLISH_PAYLOAD_OK
+          echo CHV_WEB30_PUBLISH_PAYLOAD_OK
 
       - name: Publish PWA
         shell: bash
@@ -58,8 +61,8 @@ jobs:
           git config user.email 'chvsolucoes@users.noreply.github.com'
           git add index.html app.js app.css sw.js manifest.webmanifest icon.svg icon-180.png
           if git diff --cached --quiet; then
-            echo CHV_WEB29_ALREADY_PUBLISHED
+            echo CHV_WEB30_ALREADY_PUBLISHED
             exit 0
           fi
-          git commit -m 'Publish CHV Remote Web 2.9 mobile interaction fixes'
+          git commit -m 'Publish CHV Remote Web 3.0 keyboard and file flow'
           git push origin HEAD:gh-pages

@@ -15,7 +15,9 @@ const state={
   currentCode:null,lastThumbAt:0,mouseDragArmTimer:null,mouseDragArmed:false,
   pendingFrame:null,frameDecoding:false,pendingMouseMove:null,mouseMoveRaf:0,
   lastTapAt:0,lastTapPos:null,doubleTapDrag:false,focusProbeTimer:null,keyboardProbeArmed:false,
-  interactionBurstTimer:null,interactionBurst:false,postInputTimers:[]
+  interactionBurstTimer:null,interactionBurst:false,postInputTimers:[],
+  cursorShape:'arrow',cursorEditable:false,cursorNumeric:false,cursorProbeAt:0,
+  remotePath:'',remoteParent:'',remoteEntries:[],remoteSelected:new Set(),receivedReady:[]
 };
 const settings=Object.assign({
   quality:'balanced',savePasswords:false,autoAudio:false,autoMic:false,pointerMode:'mouse'
@@ -247,7 +249,7 @@ function handleMessage(e,code,secret,timeout){
       saveConnection(code,secret);
       if(settings.autoAudio)setFeature('system_audio',true);
       if(settings.autoMic)setFeature('microphone',true);
-      applyPointerMode(settings.pointerMode);renderLists();renderCurrentPcStatus();
+      applyPointerMode(settings.pointerMode);applyCursorState({shape:'arrow',editable:false});setTimeout(()=>probeCursorState(true),120);renderLists();renderCurrentPcStatus();
       return;
     }
     if(o.type==='peer_status'&&(o.connected===false||o.online===false)){
@@ -255,9 +257,13 @@ function handleMessage(e,code,secret,timeout){
     }
     if(['text_focus','editable_focus','input_focus'].includes(o.type)){
       const editable=o.editable!==false&&o.focused!==false;
+      applyCursorState({shape:o.shape||(editable?'ibeam':state.cursorShape),editable,numeric:!!o.numeric});
       resolveTextFocus(editable,!!o.numeric);
       return;
     }
+    if(o.type==='cursor_state'){applyCursorState(o);return}
+    if(o.type==='file_list'){renderRemoteFileList(o);return}
+    if(o.type==='file_list_error'){toast('Não foi possível abrir essa pasta no computador');return}
     if(o.type==='file_offer'){acceptFile(o);return}
     if(o.type==='permission_denied')toast(o.message||'Ação bloqueada pelo computador remoto');
     return;
@@ -341,26 +347,47 @@ function clickAt(p,button='left'){
 function armKeyboardProbe(){
   const input=$('#nativeKeyboardInput');
   clearTimeout(state.focusProbeTimer);state.keyboardProbeArmed=true;
-  // Foco acontece dentro do gesto do usuário, porém com inputmode=none: não abre teclado em cliques comuns.
   input.setAttribute('inputmode','none');input.value='';
   try{input.focus({preventScroll:true})}catch{}
   state.focusProbeTimer=setTimeout(()=>{
     if(!state.keyboardProbeArmed)return;
     state.keyboardProbeArmed=false;try{input.blur()}catch{}
-  },900);
+  },950);
 }
-function probeTextFocus(p){
+function focusRemoteFieldView(){
   if(!state.connected)return;
-  state.lastFocusProbeAt=Date.now();armKeyboardProbe();
+  if(state.zoom<1.45)state.zoom=1.45;
+  const f=fitImageBase(),sw=f.width*state.zoom,sh=f.height*state.zoom;
+  const desiredY=Math.max(64,Math.min(f.wrapH*.26,210));
+  const currentY=f.wrapH/2+state.panY+(state.cursor.y-.5)*sh;
+  state.panY+=desiredY-currentY;
+  const desiredX=f.wrapW*.5,currentX=f.wrapW/2+state.panX+(state.cursor.x-.5)*sw;
+  if(currentX<f.wrapW*.15||currentX>f.wrapW*.85)state.panX+=desiredX-currentX;
+  clampPan();applyTransform();requestSharpFrame();
+}
+function openKeyboardForCursor(numeric=false){
+  if(!state.connected)return false;
+  const likely=state.cursorEditable||state.cursorShape==='ibeam';
+  if(!likely)return false;
+  clearTimeout(state.focusProbeTimer);state.keyboardProbeArmed=false;
+  focusRemoteFieldView();
+  const input=$('#nativeKeyboardInput');
+  input.value='';input.setAttribute('inputmode',numeric?'numeric':'text');
+  try{input.focus({preventScroll:true});input.setSelectionRange(0,0)}catch{}
+  return true;
+}
+function probeTextFocus(p,alreadyOpened=false){
+  if(!state.connected)return;
+  state.lastFocusProbeAt=Date.now();if(!alreadyOpened)armKeyboardProbe();
   wsSend({type:'text_focus_probe',x:p.x,y:p.y});
 }
 function resolveTextFocus(editable,numeric=false){
   clearTimeout(state.focusProbeTimer);
   const input=$('#nativeKeyboardInput');
-  if(!editable){state.keyboardProbeArmed=false;try{input.blur()}catch{};return}
-  state.keyboardProbeArmed=false;
+  if(!editable){state.keyboardProbeArmed=false;if(state.cursorShape==='ibeam')applyCursorState({shape:'arrow',editable:false});try{input.blur()}catch{};return}
+  state.keyboardProbeArmed=false;state.cursorEditable=true;state.cursorNumeric=!!numeric;applyCursorState({shape:'ibeam',editable:true,numeric:!!numeric});
+  focusRemoteFieldView();
   input.setAttribute('inputmode',numeric?'numeric':'text');input.value='';
-  // O input já foi focado durante o toque; trocar o inputmode e refocar preserva a ativação no iOS/PWA.
   try{input.blur();input.focus({preventScroll:true});input.setSelectionRange(0,0)}catch{}
 }
 
@@ -531,12 +558,33 @@ function applyPointerMode(mode){
   $('#sessionMouseBtn')?.classList.toggle('active',mouse);$('#sessionTouchBtn')?.classList.toggle('active',!mouse);
   updateCursorVisual();
 }
+function cursorMarkup(shape){
+  if(shape==='ibeam')return '<svg viewBox="0 0 32 42"><path d="M10 3h12M16 3v36M10 39h12" fill="none" stroke="white" stroke-width="3"/><path d="M9 2h14M16 2v38M9 40h14" fill="none" stroke="#111" stroke-width="6" opacity=".82"/></svg>';
+  if(shape==='hand')return '<svg viewBox="0 0 42 48"><path d="M12 22V8c0-5 7-5 7 0v10-7c0-5 7-5 7 0v8-5c0-5 7-5 7 0v8-3c0-5 7-5 7 0v11c0 9-6 15-15 15h-5c-6 0-9-3-12-8L3 29c-2-4 4-8 7-4z" fill="white" stroke="#111" stroke-width="2.4" stroke-linejoin="round"/></svg>';
+  if(shape==='wait'||shape==='appstarting')return '<svg viewBox="0 0 36 44"><path d="M9 3h18v5c0 5-3 9-7 12 4 3 7 7 7 12v8H9v-8c0-5 3-9 7-12-4-3-7-7-7-12z" fill="white" stroke="#111" stroke-width="2.5"/><path d="M12 8h12c0 4-3 7-6 9-3-2-6-5-6-9zm1 27h10c-1-4-3-7-5-9-2 2-4 5-5 9z" fill="#5aa9ff"/></svg>';
+  if(shape==='cross')return '<svg viewBox="0 0 36 36"><path d="M18 2v32M2 18h32" stroke="white" stroke-width="2.5"/><path d="M18 2v32M2 18h32" stroke="#111" stroke-width="5" opacity=".75"/></svg>';
+  if(shape==='size_we')return '<svg viewBox="0 0 44 32"><path d="M3 16h38M3 16l8-7M3 16l8 7M41 16l-8-7M41 16l-8 7" fill="none" stroke="white" stroke-width="3"/><path d="M3 16h38" stroke="#111" stroke-width="6" opacity=".75"/></svg>';
+  if(shape==='size_ns')return '<svg viewBox="0 0 32 44"><path d="M16 3v38M16 3l-7 8M16 3l7 8M16 41l-7-8M16 41l7-8" fill="none" stroke="white" stroke-width="3"/><path d="M16 3v38" stroke="#111" stroke-width="6" opacity=".75"/></svg>';
+  if(shape==='size_all')return '<svg viewBox="0 0 44 44"><path d="M22 3v38M3 22h38M22 3l-6 7M22 3l6 7M22 41l-6-7M22 41l6-7M3 22l7-6M3 22l7 6M41 22l-7-6M41 22l-7 6" fill="none" stroke="white" stroke-width="2.6"/></svg>';
+  return '<svg viewBox="0 0 32 42"><path d="M3 2 L3 32 L11 24 L17 39 L23 36 L17 22 L29 22 Z" fill="white" stroke="#111" stroke-width="2.2" stroke-linejoin="round"/></svg>';
+}
+function applyCursorState(o){
+  const shape=String(o?.shape||'arrow').toLowerCase();
+  state.cursorShape=shape;state.cursorEditable=!!(o?.editable||shape==='ibeam');state.cursorNumeric=!!o?.numeric;
+  const c=$('#mouseCursor');c.dataset.shape=shape;c.innerHTML=cursorMarkup(shape);updateCursorVisual();
+}
+function probeCursorState(force=false){
+  if(!state.connected||settings.pointerMode!=='mouse')return;
+  const now=performance.now();if(!force&&now-state.cursorProbeAt<90)return;state.cursorProbeAt=now;
+  wsSend({type:'cursor_probe',x:state.cursor.x,y:state.cursor.y});
+}
 function updateCursorVisual(){
   if(settings.pointerMode!=='mouse')return;
   const b=imageBox(),c=$('#mouseCursor'),wr=$('#screenWrap').getBoundingClientRect();
   c.style.left=(b.left-wr.left+state.cursor.x*b.width)+'px';
   c.style.top=(b.top-wr.top+state.cursor.y*b.height)+'px';
 }
+
 function clearLongPress(){
   clearTimeout(state.longPressTimer);state.longPressTimer=null;
 }
@@ -614,7 +662,7 @@ function pointerMove(e){
     if(state.mouseDragArmed&&!state.dragging){state.dragging=true;sendMouse('down',before,{button:'left'})}
     state.cursor.x=Math.max(0,Math.min(1,state.cursor.x+dx/Math.max(150,wr.width*.78)));
     state.cursor.y=Math.max(0,Math.min(1,state.cursor.y+dy/Math.max(150,wr.height*.78)));
-    sendMouse('move',state.cursor,state.dragging?{button:'left',buttons:1}:{});
+    sendMouse('move',state.cursor,state.dragging?{button:'left',buttons:1}:{});probeCursorState();
     if(state.zoom>1)followCursorPan();else updateCursorVisual();
   }else if(state.moved){
     const point=normalizedPoint(e.clientX,e.clientY);
@@ -635,13 +683,13 @@ function pointerUp(e){
       if(!state.moved&&state.doubleTapDrag)probeTextFocus(state.cursor);
       state.lastTapAt=0;state.lastTapPos=null;
     }else if(!state.moved){
-      clickAt(state.cursor,'left');probeTextFocus(state.cursor);
+      const keyboardOpened=openKeyboardForCursor(state.cursorNumeric);clickAt(state.cursor,'left');probeTextFocus(state.cursor,keyboardOpened);
       state.lastTapAt=performance.now();state.lastTapPos={x:e.clientX,y:e.clientY};
     }else{state.lastTapAt=0;state.lastTapPos=null}
   }else{
     const point=normalizedPoint(e.clientX,e.clientY);
     if(state.dragging){sendMouse('move',point,{button:'left',buttons:1});sendMouse('up',point,{button:'left'});postInputRefresh('touch_drag')}
-    else if(!state.moved){clickAt(point,'left');probeTextFocus(point)}
+    else if(!state.moved){clickAt(point,'left');probeTextFocus(point,false)}
   }
   resetGestureFlags();
 }
@@ -753,6 +801,56 @@ function toggleModifier(key,button){
 function chord(key){
   const ctrlWas=state.modifiers.has('ctrl');if(!ctrlWas)sendKey('ctrl',true);tapKey(key);if(!ctrlWas)sendKey('ctrl',false);
 }
+function formatBytes(n){
+  n=Number(n||0);if(n<1024)return n+' B';if(n<1048576)return (n/1024).toFixed(1)+' KB';if(n<1073741824)return (n/1048576).toFixed(1)+' MB';return (n/1073741824).toFixed(1)+' GB';
+}
+function openRemoteFiles(){
+  if(!state.connected)return toast('Conecte primeiro ao computador.');
+  if(!state.canAdmin)return toast('Gerenciador de arquivos bloqueado pelo computador remoto');
+  state.remoteSelected.clear();openSheet('fileBrowserSheet');requestRemotePath('');
+}
+function requestRemotePath(path=''){state.remoteSelected.clear();wsSend({type:'file_list_request',path:String(path||'')});$('#remoteFileList').innerHTML='<div class="file-loading">Carregando…</div>'}
+function renderRemoteFileList(o){
+  state.remotePath=String(o.path||'');state.remoteParent=String(o.parent||'');state.remoteEntries=Array.isArray(o.entries)?o.entries:[];state.remoteSelected.clear();
+  $('#remotePath').textContent=state.remotePath||'Este PC';$('#remoteUpBtn').disabled=!state.remotePath;
+  const box=$('#remoteFileList');box.innerHTML='';
+  if(!state.remoteEntries.length){box.innerHTML='<div class="file-loading">Pasta vazia.</div>';updateReceiveButton();return}
+  for(const entry of state.remoteEntries){
+    const row=document.createElement('div');row.className='remote-file-row '+(entry.is_dir?'dir':'file');
+    const select=entry.is_dir?'':'<input class="remote-file-check" type="checkbox" aria-label="Selecionar arquivo">';
+    row.innerHTML=select+'<button class="remote-file-open"><span class="remote-file-icon">'+(entry.is_dir?'📁':'📄')+'</span><span class="remote-file-name"></span><small></small></button>';
+    row.querySelector('.remote-file-name').textContent=entry.name||entry.path||'Arquivo';
+    row.querySelector('small').textContent=entry.is_dir?'Pasta':formatBytes(entry.size||0);
+    row.querySelector('.remote-file-open').onclick=()=>{if(entry.is_dir)requestRemotePath(entry.path);else{const cb=row.querySelector('.remote-file-check');cb.checked=!cb.checked;toggleRemoteSelection(entry.path,cb.checked)}};
+    const cb=row.querySelector('.remote-file-check');if(cb)cb.onchange=()=>toggleRemoteSelection(entry.path,cb.checked);
+    box.appendChild(row);
+  }
+  updateReceiveButton();
+}
+function toggleRemoteSelection(path,on){if(on)state.remoteSelected.add(path);else state.remoteSelected.delete(path);updateReceiveButton()}
+function updateReceiveButton(){const b=$('#receiveSelectedBtn');if(b){b.disabled=!state.remoteSelected.size;b.textContent=state.remoteSelected.size?'Receber ('+state.remoteSelected.size+')':'Receber selecionado'}}
+function receiveSelectedFiles(){
+  const paths=[...state.remoteSelected];if(!paths.length)return toast('Selecione um arquivo do computador.');
+  wsSend({type:'file_download_request',paths});toast('Recebendo '+paths.length+' arquivo(s)…');
+}
+function showReceivedFiles(){
+  const names=state.receivedReady.map(x=>x.name);$('#receivedFileName').textContent=names.length===1?names[0]:names.length+' arquivos recebidos';
+  $('#receivedFileSheet').classList.remove('hidden');
+}
+async function saveReceivedFiles(){
+  if(!state.receivedReady.length)return;
+  const files=state.receivedReady.map(x=>new File([x.blob],x.name,{type:x.blob.type||'application/octet-stream'}));
+  try{
+    if(navigator.share&&navigator.canShare?.({files})){
+      await navigator.share({files,title:'CHV Remote'});
+      toast('No iPhone, escolha “Salvar em Arquivos” e a pasta desejada.');
+      return;
+    }
+  }catch(err){if(err?.name==='AbortError')return}
+  for(const item of state.receivedReady){const url=URL.createObjectURL(item.blob),a=document.createElement('a');a.href=url;a.download=item.name;document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),60000)}
+  toast('Download iniciado.');
+}
+
 function acceptFile(o){
   if(!state.canAdmin||!o.id)return;
   state.incoming.set(o.id,{name:(o.name||'arquivo').split(/[\\/]/).pop(),chunks:[],clipboard:!!o.clipboard});
@@ -762,11 +860,12 @@ function fileChunk(u){
   let meta;try{meta=JSON.parse(new TextDecoder().decode(u.slice(5,5+ml)))}catch{return}
   const t=state.incoming.get(meta.id);if(!t)return;
   if(meta.final){
-    const blob=new Blob(t.chunks),url=URL.createObjectURL(blob),a=document.createElement('a');
-    a.href=url;a.download=t.name;a.click();setTimeout(()=>URL.revokeObjectURL(url),60000);
-    state.incoming.delete(meta.id);toast('Arquivo recebido: '+t.name);
+    const blob=new Blob(t.chunks,{type:'application/octet-stream'});
+    state.incoming.delete(meta.id);state.receivedReady.push({name:t.name,blob});
+    showReceivedFiles();toast('Arquivo recebido: '+t.name);
   }else t.chunks.push(u.slice(5+ml));
 }
+
 async function sendFiles(files){
   if(!state.canAdmin)return toast('Envio de arquivos bloqueado pelo computador remoto');
   for(const file of files){
@@ -822,7 +921,7 @@ $('#edgeHandle').onclick=e=>{e.stopPropagation();toggleEdgeMenu()};$('#menuClose
 $('#sessionSettingsBtn').onclick=()=>openSheet('sessionSettingsSheet');
 $('#menuModeBtn').onclick=()=>applyPointerMode(settings.pointerMode==='mouse'?'touch':'mouse');
 $('#menuKeyboardBtn').onclick=()=>openSheet('keyboardSheet');
-$('#menuFilesBtn').onclick=()=>{$('#fileInput').click();closeEdgeMenu()};
+$('#menuFilesBtn').onclick=openRemoteFiles;
 $('#quickActionsBtn').onclick=e=>{e.stopPropagation();$('#quickActionsMenu').classList.toggle('hidden')};
 $('#menuFullscreenBtn').onclick=()=>{closeEdgeMenu();toggleFullscreen()};
 $('#menuDisconnectBtn').onclick=disconnect;
@@ -843,6 +942,12 @@ ctrlKeyBtn.addEventListener('pointerup',()=>clearTimeout(state.ctrlHoldTimer));c
 $$('[data-chord]').forEach(b=>b.onclick=()=>{chord(b.dataset.chord);$('#ctrlShortcutMenu').classList.add('hidden')});
 
 $('#fileInput').onchange=e=>{sendFiles([...e.target.files]);e.target.value=''};
+$('#sendFromPhoneBtn').onclick=()=>$('#fileInput').click();
+$('#receiveSelectedBtn').onclick=receiveSelectedFiles;
+$('#remoteUpBtn').onclick=()=>requestRemotePath(state.remoteParent||'');
+$('#refreshRemoteFilesBtn').onclick=()=>requestRemotePath(state.remotePath||'');
+$('#saveReceivedBtn').onclick=saveReceivedFiles;
+$('#clearReceivedBtn').onclick=()=>{state.receivedReady=[];$('#receivedFileSheet').classList.add('hidden')};
 const sw=$('#screenWrap');
 sw.addEventListener('pointerdown',pointerDown,{passive:false});sw.addEventListener('pointermove',pointerMove,{passive:false});sw.addEventListener('pointerup',pointerUp,{passive:false});sw.addEventListener('pointercancel',pointerCancel,{passive:false});sw.addEventListener('wheel',wheel,{passive:false});sw.addEventListener('contextmenu',e=>e.preventDefault());sw.addEventListener('selectstart',e=>e.preventDefault());sw.addEventListener('dragstart',e=>e.preventDefault());
 const sessionActive=()=>$('#sessionView').classList.contains('active');

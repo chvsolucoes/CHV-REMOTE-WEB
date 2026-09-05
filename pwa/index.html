@@ -70,7 +70,7 @@
             <select id="pointerMode"><option value="mouse">Mouse</option><option value="touch">Touch Screen</option></select>
           </div>
         </div>
-        <div class="card about"><strong>CHV Remote Web App</strong><p>Versão PWA 2.6.0 • conexão via CHV Relay • controle móvel otimizado.</p></div>
+        <div class="card about"><strong>CHV Remote Web App</strong><p>Versão PWA 2.7.0 • conexão via CHV Relay • controle móvel otimizado.</p></div>
       </section>
 
       <section id="sessionView" class="view session-view">
@@ -166,6 +166,23 @@
           </div>
           <div id="ctrlShortcutMenu" class="ctrl-shortcuts hidden"><button data-chord="c">Copiar</button><button data-chord="v">Colar</button><button data-chord="x">Recortar</button></div>
         </div>
+      </div>
+    </div>
+
+    <div id="fileBrowserSheet" class="sheet hidden">
+      <div class="sheet-card file-browser-card">
+        <div class="sheet-head"><div><strong>Gerenciador de arquivos</strong><small>Computador remoto</small></div><button data-close-sheet="fileBrowserSheet">Fechar</button></div>
+        <div class="file-browser-toolbar"><button id="remoteUpBtn" class="secondary">↑ Voltar</button><div id="remotePath" class="remote-path">Este PC</div><button id="refreshRemoteFilesBtn" class="secondary">↻</button></div>
+        <div id="remoteFileList" class="remote-file-list"><div class="file-loading">Carregando…</div></div>
+        <div class="file-browser-actions"><button id="sendFromPhoneBtn" class="sheet-action">↥ Enviar do celular</button><button id="receiveSelectedBtn" class="sheet-action" disabled>↧ Receber selecionado</button></div>
+      </div>
+    </div>
+
+    <div id="receivedFileSheet" class="sheet hidden">
+      <div class="sheet-card received-file-card">
+        <div class="sheet-head"><div><strong>Arquivo recebido</strong><small id="receivedFileName">CHV Remote</small></div><button id="clearReceivedBtn">Fechar</button></div>
+        <p>No iPhone/iPad, toque em <b>Salvar em Arquivos</b> e escolha ou crie a pasta <b>CHV Remote</b>. Por segurança, o iOS não permite que um site crie ou abra uma pasta do app Arquivos sem sua confirmação.</p>
+        <button id="saveReceivedBtn" class="primary">Salvar em Arquivos</button>
       </div>
     </div>
 

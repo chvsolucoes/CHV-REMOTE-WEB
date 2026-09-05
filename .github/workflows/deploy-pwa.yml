@@ -1,0 +1,65 @@
+name: Deploy CHV Remote PWA
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'pwa/**'
+      - '.github/workflows/deploy-pwa.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: chv-remote-pwa-publish
+  cancel-in-progress: true
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout main source
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          path: source
+          fetch-depth: 1
+
+      - name: Checkout published branch
+        uses: actions/checkout@v4
+        with:
+          ref: gh-pages
+          path: publish
+          fetch-depth: 1
+
+      - name: Copy current PWA while preserving live relay.json
+        shell: bash
+        run: |
+          set -euo pipefail
+          for f in index.html app.js app.css sw.js manifest.webmanifest icon.svg icon-180.png; do
+            cp "source/pwa/$f" "publish/$f"
+          done
+          grep -q "chv-remote-pwa-v2.9.0" publish/sw.js
+          if grep -Fq "setAttribute('inputmode','none')" publish/app.js; then
+            echo 'mobile keyboard suppression still present'
+            exit 1
+          fi
+          grep -q "visualViewport" publish/app.js
+          grep -q "fps:38" publish/app.js
+          echo CHV_WEB29_PUBLISH_PAYLOAD_OK
+
+      - name: Publish PWA
+        shell: bash
+        working-directory: publish
+        run: |
+          set -euo pipefail
+          git config user.name 'CHV Remote Bot'
+          git config user.email 'chvsolucoes@users.noreply.github.com'
+          git add index.html app.js app.css sw.js manifest.webmanifest icon.svg icon-180.png
+          if git diff --cached --quiet; then
+            echo CHV_WEB29_ALREADY_PUBLISHED
+            exit 0
+          fi
+          git commit -m 'Publish CHV Remote Web 2.9 mobile interaction fixes'
+          git push origin HEAD:gh-pages

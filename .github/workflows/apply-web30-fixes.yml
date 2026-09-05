@@ -1,0 +1,47 @@
+name: Apply CHV Remote Web 3.0 fixes
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'tools/apply_web30.py'
+      - '.github/workflows/apply-web30-fixes.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 1
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Apply Web 3.0 patch
+        run: python tools/apply_web30.py
+      - name: Validate mobile keyboard and transfer flow
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -q "chv-remote-pwa-v3.0.0" pwa/sw.js
+          grep -q "syncKeyboardViewport" pwa/app.js
+          grep -q "keyboard-visible" pwa/app.css
+          grep -q "reveal_received_folder_request" pwa/app.js
+          grep -q "sentFileSheet" pwa/index.html
+          grep -q "Versão PWA 3.0.0" pwa/index.html
+          if grep -Fq "setAttribute('inputmode','none')" pwa/app.js; then exit 1; fi
+          echo CHV_WEB30_VALIDATION_OK
+      - name: Commit Web 3.0 payload
+        shell: bash
+        run: |
+          git config user.name 'CHV Remote Bot'
+          git config user.email 'chvsolucoes@users.noreply.github.com'
+          git add pwa/app.js pwa/app.css pwa/index.html pwa/sw.js
+          if git diff --cached --quiet; then exit 0; fi
+          git commit -m 'CHV Remote Web 3.0 keyboard viewport and transfer flow'
+          git push origin HEAD:main

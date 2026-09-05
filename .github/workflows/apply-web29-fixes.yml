@@ -1,0 +1,38 @@
+name: Apply CHV Remote Web 2.9 mobile fixes
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/apply-web29-fixes.yml'
+      - 'tools/apply_web29.py'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+      - name: Apply Web 2.9 patch
+        run: python tools/apply_web29.py
+      - name: Validate JavaScript markers
+        run: |
+          grep -q "chv-remote-pwa-v2.9.0" pwa/sw.js
+          grep -q "inputmode=none" pwa/app.js && exit 1 || true
+          grep -q "visualViewport" pwa/app.js
+          grep -q "fps:38" pwa/app.js
+          grep -q "data-shape=\"ibeam\"" pwa/app.css || grep -q 'data-shape="ibeam"' pwa/app.css
+          echo CHV_WEB_2_9_VALIDATION_OK
+      - name: Commit Web 2.9
+        run: |
+          if git diff --quiet; then exit 0; fi
+          git config user.name "CHV Remote Build Bot"
+          git config user.email "chvremote-bot@users.noreply.github.com"
+          git add pwa/app.js pwa/app.css pwa/sw.js
+          git commit -m "CHV Remote Web 2.9 mobile keyboard cursor and latency fixes"
+          git push

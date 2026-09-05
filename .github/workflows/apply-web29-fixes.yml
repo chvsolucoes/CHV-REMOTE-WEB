@@ -36,3 +36,5 @@ jobs:
           git add pwa/app.js pwa/app.css pwa/sw.js
           git commit -m "CHV Remote Web 2.9 mobile keyboard cursor and latency fixes"
           git push
+
+# Trigger marker: WEB29 mobile interaction pass

@@ -49,8 +49,10 @@ function qProfile(){
          settings.quality==='speed'?[1280,720,'contain']:[1600,900,'contain'];
 }
 function streamTuning(){
-  return settings.quality==='quality'?{fps:26,jpeg_quality:84,subsampling:2}:
-         settings.quality==='speed'?{fps:30,jpeg_quality:68,subsampling:2}:{fps:30,jpeg_quality:76,subsampling:2};
+  // Keep the encoder below saturation. A saturated JPEG encoder feels slower than
+  // a slightly lower FPS stream because pointer/input packets wait behind frames.
+  return settings.quality==='quality'?{fps:24,jpeg_quality:82,subsampling:2}:
+         settings.quality==='speed'?{fps:36,jpeg_quality:60,subsampling:2}:{fps:30,jpeg_quality:72,subsampling:2};
 }
 function adaptiveDimensions(){
   let [w,h]=qProfile();
@@ -70,18 +72,21 @@ function noteInteraction(){
   clearTimeout(state.interactionBurstTimer);
   if(!state.interactionBurst){
     state.interactionBurst=true;
-    // Perfil de baixa latência: reduz bytes enquanto move/arrasta e volta à qualidade normal logo depois.
-    wsSend({type:'screen_profile',width:1024,height:576,fit:false,reason:'interactive'});
-    wsSend({type:'stream_tuning',width:1024,height:576,fps:45,jpeg_quality:55,subsampling:2,reason:'interactive'});
+    // 720p is still readable on a phone, while 38 FPS leaves CPU/network headroom
+    // for mouse packets. 45 FPS at 576p was able to saturate slower Windows hosts.
+    wsSend({type:'screen_profile',width:1280,height:720,fit:false,reason:'interactive'});
+    wsSend({type:'stream_tuning',width:1280,height:720,fps:38,jpeg_quality:58,subsampling:2,reason:'interactive'});
   }
-  state.interactionBurstTimer=setTimeout(()=>{state.interactionBurst=false;sendAdaptiveStreamProfile('settled')},220);
+  state.interactionBurstTimer=setTimeout(()=>{state.interactionBurst=false;sendAdaptiveStreamProfile('settled')},320);
 }
 function postInputRefresh(reason='input'){
+  // request_frame is an event, not a frame queue. Coalescing avoids repeatedly
+  // waking the encoder after one click/keystroke and keeps input ahead of video.
   for(const t of state.postInputTimers)clearTimeout(t);state.postInputTimers=[];
-  for(const ms of [0,55,130,260,520,900])state.postInputTimers.push(setTimeout(()=>{
+  for(const ms of [0,85,220])state.postInputTimers.push(setTimeout(()=>{
     if(state.connected)wsSend({type:'request_frame',reason});
   },ms));
-  state.postInputTimers.push(setTimeout(()=>sendAdaptiveStreamProfile('post_'+reason),940));
+  state.postInputTimers.push(setTimeout(()=>sendAdaptiveStreamProfile('post_'+reason),360));
 }
 
 function uniqueCodes(){
@@ -345,15 +350,17 @@ function clickAt(p,button='left'){
   sendMouse('down',p,{button});sendMouse('up',p,{button});
   postInputRefresh(button==='right'?'right_click':'click');
 }
-function armKeyboardProbe(){
+function armKeyboardProbe(numeric=false){
   const input=$('#nativeKeyboardInput');
   clearTimeout(state.focusProbeTimer);state.keyboardProbeArmed=true;
-  input.setAttribute('inputmode','none');input.value='';
-  try{input.focus({preventScroll:true})}catch{}
+  // Never use inputmode=none here. iOS remembers the suppressed keyboard for the
+  // trusted tap and may refuse a later asynchronous refocus from text_focus.
+  input.setAttribute('inputmode',numeric?'numeric':'text');input.value='';
+  try{input.focus({preventScroll:true});input.setSelectionRange(0,0)}catch{}
   state.focusProbeTimer=setTimeout(()=>{
     if(!state.keyboardProbeArmed)return;
     state.keyboardProbeArmed=false;try{input.blur()}catch{}
-  },950);
+  },850);
 }
 function focusRemoteFieldView(){
   if(!state.connected)return;
@@ -366,24 +373,29 @@ function focusRemoteFieldView(){
   if(currentX<f.wrapW*.15||currentX>f.wrapW*.85)state.panX+=desiredX-currentX;
   clampPan();applyTransform();requestSharpFrame();
 }
-function openKeyboardForCursor(numeric=false){
+function openKeyboardForCursor(numeric=false,force=false){
   if(!state.connected)return false;
-  const likely=state.cursorEditable||state.cursorShape==='ibeam';
+  const likely=force||state.cursorEditable||state.cursorShape==='ibeam';
+  if(!likely)return false;
   clearTimeout(state.focusProbeTimer);state.keyboardProbeArmed=true;
   const input=$('#nativeKeyboardInput');
   input.value='';input.setAttribute('inputmode',numeric?'numeric':'text');
-  // O foco ocorre dentro do gesto físico: no iOS isso permite abrir o teclado antes da resposta assíncrona do host.
+  // Must run in pointerdown/up from the physical touch. This is what makes the
+  // native iPhone/Android keyboard appear reliably instead of waiting on the host.
   try{input.focus({preventScroll:true});input.setSelectionRange(0,0)}catch{}
-  if(likely)focusRemoteFieldView();
+  focusRemoteFieldView();
   state.focusProbeTimer=setTimeout(()=>{
     if(!state.keyboardProbeArmed)return;
     state.keyboardProbeArmed=false;try{input.blur()}catch{}
-  },700);
-  return true;
+  },850);
+  return document.activeElement===input;
 }
 function probeTextFocus(p,alreadyOpened=false){
   if(!state.connected)return;
-  state.lastFocusProbeAt=Date.now();if(!alreadyOpened)armKeyboardProbe();
+  state.lastFocusProbeAt=Date.now();
+  // If the cursor already says I-beam, keep the trusted-gesture focus alive. For
+  // an unknown target, wait for the host instead of flashing a keyboard on buttons.
+  if(!alreadyOpened&&(state.cursorEditable||state.cursorShape==='ibeam'))armKeyboardProbe(state.cursorNumeric);
   wsSend({type:'text_focus_probe',x:p.x,y:p.y});
 }
 function resolveTextFocus(editable,numeric=false){
@@ -647,17 +659,24 @@ function pointerDown(e){
   if(state.pointers.size>2)return;
   state.lastPointer={x:e.clientX,y:e.clientY,time:now};
   if(settings.pointerMode==='mouse'){
+    // Prime the phone keyboard on pointer-down while Safari still treats this as a
+    // user gesture. It is harmless for non-editable targets because it only runs
+    // when the host's live cursor is already an I-beam/editable cursor.
+    if(state.cursorEditable||state.cursorShape==='ibeam')openKeyboardForCursor(state.cursorNumeric);
     const lp=state.lastTapPos;
     const doubleTap=!!lp&&now-state.lastTapAt<=420&&Math.hypot(e.clientX-lp.x,e.clientY-lp.y)<=38;
     if(doubleTap){
       state.doubleTapDrag=true;state.dragging=true;state.lastTapAt=0;state.lastTapPos=null;
-      clearLongPress();clearMouseDragArm();sendMouse('down',state.cursor,{button:'left'});
+      clearLongPress();clearMouseDragArm();flushMouseMove();sendMouse('down',state.cursor,{button:'left',buttons:1});
     }else{
       clearMouseDragArm();const pid=e.pointerId;
       state.mouseDragArmTimer=setTimeout(()=>{if(state.pointers.has(pid)&&!state.moved&&!state.longPressFired&&!state.doubleTapDrag)state.mouseDragArmed=true},190);
       startLongPress(state.cursor);
     }
-  }else startLongPress(normalizedPoint(e.clientX,e.clientY));
+  }else{
+    armKeyboardProbe(false);
+    startLongPress(normalizedPoint(e.clientX,e.clientY));
+  }
 }
 function pointerMove(e){
   if(state.edgeGesture&&state.edgeGesture.id===e.pointerId){e.preventDefault();if(e.clientX-state.edgeGesture.startX>42){openEdgeMenu();state.edgeGesture=null}return}
@@ -693,7 +712,8 @@ function pointerUp(e){
       if(!state.moved&&state.doubleTapDrag)probeTextFocus(state.cursor);
       state.lastTapAt=0;state.lastTapPos=null;
     }else if(!state.moved){
-      const keyboardOpened=openKeyboardForCursor(state.cursorNumeric);clickAt(state.cursor,'left');probeTextFocus(state.cursor,keyboardOpened);
+      const keyboardOpened=(document.activeElement===$('#nativeKeyboardInput'))||openKeyboardForCursor(state.cursorNumeric);
+      clickAt(state.cursor,'left');probeTextFocus(state.cursor,keyboardOpened);
       state.lastTapAt=performance.now();state.lastTapPos={x:e.clientX,y:e.clientY};
     }else{state.lastTapAt=0;state.lastTapPos=null}
   }else{
@@ -990,3 +1010,16 @@ renderLists();applyPointerMode(settings.pointerMode);renderCurrentPcStatus();upd
 refreshRelayHealth().then(()=>{refreshPresence();updateConnectButton()});
 setInterval(()=>refreshRelayHealth().then(updateConnectButton),10000);
 setInterval(refreshPresence,8000);
+
+
+// CHV Remote Web 2.9: keep the remote edit field visible when the iOS/Android
+// software keyboard changes the visual viewport height.
+if(window.visualViewport){
+  let vvTimer=0;
+  window.visualViewport.addEventListener('resize',()=>{
+    clearTimeout(vvTimer);
+    vvTimer=setTimeout(()=>{
+      if(state.connected&&document.activeElement===$('#nativeKeyboardInput')&&(state.cursorEditable||state.cursorShape==='ibeam'))focusRemoteFieldView();
+    },45);
+  });
+}

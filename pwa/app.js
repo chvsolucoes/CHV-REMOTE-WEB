@@ -18,7 +18,7 @@ const state={
   interactionBurstTimer:null,interactionBurst:false,postInputTimers:[],
   cursorShape:'arrow',cursorEditable:false,cursorNumeric:false,cursorProbeAt:0,
   remotePath:'',remoteParent:'',remoteEntries:[],remoteSelected:new Set(),receivedReady:[],
-  remotePermissions:{audio:true,microphone:true,full_control:true},keyboardReframeTimers:[]
+  remotePermissions:{audio:true,microphone:true,full_control:true},keyboardReframeTimers:[],keyboardTarget:null
 };
 const settings=Object.assign({
   quality:'balanced',savePasswords:false,autoAudio:true,autoMic:true,pointerMode:'mouse'
@@ -415,20 +415,22 @@ function focusRemoteFieldView(){
   const minZoom=compact?2.05:1.72;
   if(state.zoom<minZoom)state.zoom=minZoom;
   const f=fitImageBase(),scaledW=f.width*state.zoom,scaledH=f.height*state.zoom;
-  // Work in screenWrap-local coordinates. Desired Y is deliberately high so the
-  // caret/password field and the following line remain visible above the keyboard.
-  const targetY=Math.max(54,Math.min(wr.height*.30,168));
-  const cursorY=wr.height/2+state.panY+(state.cursor.y-.5)*scaledH;
+  // Track the actual remote point that was tapped. Cursor probing can arrive one
+  // or two frames later on a busy host, which used to pan to the old cursor and
+  // leave the real password/text field hidden behind the phone keyboard.
+  const kp=state.keyboardTarget||state.cursor;
+  const targetY=Math.max(48,Math.min(wr.height*.25,142));
+  const cursorY=wr.height/2+state.panY+(kp.y-.5)*scaledH;
   state.panY+=targetY-cursorY;
   const leftGuard=Math.max(48,wr.width*.16),rightGuard=wr.width-leftGuard;
-  const cursorX=wr.width/2+state.panX+(state.cursor.x-.5)*scaledW;
+  const cursorX=wr.width/2+state.panX+(kp.x-.5)*scaledW;
   if(cursorX<leftGuard)state.panX+=leftGuard-cursorX;
   else if(cursorX>rightGuard)state.panX-=cursorX-rightGuard;
   clampPan();applyTransform();requestSharpFrame();
 }
 function scheduleKeyboardReframe(){
   clearKeyboardReframeTimers();
-  for(const ms of [0,55,140,260,420])state.keyboardReframeTimers.push(setTimeout(()=>{
+  for(const ms of [0,60,150,280,460,700])state.keyboardReframeTimers.push(setTimeout(()=>{
     if(state.connected&&document.activeElement===$('#nativeKeyboardInput'))focusRemoteFieldView();
   },ms));
 }
@@ -451,6 +453,7 @@ function openKeyboardForCursor(numeric=false,force=false){
 }
 function probeTextFocus(p,alreadyOpened=false){
   if(!state.connected)return;
+  state.keyboardTarget={x:Math.max(0,Math.min(1,p.x)),y:Math.max(0,Math.min(1,p.y))};
   state.lastFocusProbeAt=Date.now();
   // If the cursor already says I-beam, keep the trusted-gesture focus alive. For
   // an unknown target, wait for the host instead of flashing a keyboard on buttons.
@@ -460,7 +463,7 @@ function probeTextFocus(p,alreadyOpened=false){
 function resolveTextFocus(editable,numeric=false){
   clearTimeout(state.focusProbeTimer);
   const input=$('#nativeKeyboardInput');
-  if(!editable){state.keyboardProbeArmed=false;if(state.cursorShape==='ibeam')applyCursorState({shape:'arrow',editable:false});try{input.blur()}catch{};return}
+  if(!editable){state.keyboardProbeArmed=false;state.keyboardTarget=null;if(state.cursorShape==='ibeam')applyCursorState({shape:'arrow',editable:false});try{input.blur()}catch{};return}
   state.keyboardProbeArmed=false;state.cursorEditable=true;state.cursorNumeric=!!numeric;applyCursorState({shape:'ibeam',editable:true,numeric:!!numeric});
   focusRemoteFieldView();scheduleKeyboardReframe();
   input.setAttribute('inputmode',numeric?'numeric':'text');input.value='';

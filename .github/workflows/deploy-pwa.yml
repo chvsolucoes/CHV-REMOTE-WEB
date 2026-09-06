@@ -25,14 +25,12 @@ jobs:
           ref: main
           path: source
           fetch-depth: 1
-
       - name: Checkout published branch
         uses: actions/checkout@v4
         with:
           ref: gh-pages
           path: publish
           fetch-depth: 1
-
       - name: Copy current PWA while preserving live relay.json
         shell: bash
         run: |
@@ -40,20 +38,21 @@ jobs:
           for f in index.html app.js app.css sw.js manifest.webmanifest icon.svg icon-180.png; do
             cp "source/pwa/$f" "publish/$f"
           done
-          grep -q "chv-remote-pwa-v3.2.0" publish/sw.js
+          grep -q "chv-remote-pwa-v3.3.0" publish/sw.js
           if grep -Fq "setAttribute('inputmode','none')" publish/app.js; then
             echo 'mobile keyboard suppression still present'
             exit 1
           fi
           grep -q "syncKeyboardViewport" publish/app.js
           grep -q "scheduleKeyboardReframe" publish/app.js
+          grep -q "keyboardTarget" publish/app.js
+          grep -q "const kp=state.keyboardTarget||state.cursor" publish/app.js
           grep -q "keyboard-visible" publish/app.css
           grep -q "remotePermissions" publish/app.js
           grep -q "web32AudioDefaultsMigrated" publish/app.js
           grep -q "sentFileSheet" publish/index.html
           grep -q "fps:38" publish/app.js
-          echo CHV_WEB32_PUBLISH_PAYLOAD_OK
-
+          echo CHV_WEB33_PUBLISH_PAYLOAD_OK
       - name: Publish PWA
         shell: bash
         working-directory: publish
@@ -63,8 +62,8 @@ jobs:
           git config user.email 'chvsolucoes@users.noreply.github.com'
           git add index.html app.js app.css sw.js manifest.webmanifest icon.svg icon-180.png
           if git diff --cached --quiet; then
-            echo CHV_WEB32_ALREADY_PUBLISHED
+            echo CHV_WEB33_ALREADY_PUBLISHED
             exit 0
           fi
-          git commit -m 'Publish CHV Remote Web 3.2 remote UX fixes'
+          git commit -m 'Publish CHV Remote Web 3.3 mobile keyboard framing'
           git push origin HEAD:gh-pages

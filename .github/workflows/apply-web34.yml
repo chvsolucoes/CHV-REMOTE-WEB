@@ -1,0 +1,50 @@
+name: Apply CHV Remote Web 3.4 fixes
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'tools/apply_web34.py'
+      - '.github/workflows/apply-web34.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 1
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Apply Web 3.4 patch
+        run: python tools/apply_web34.py
+      - name: Validate Web 3.4
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -q "chv-remote-pwa-v3.4.0" pwa/sw.js
+          grep -q "secureDesktop" pwa/app.js
+          grep -q "portableBlocked" pwa/app.js
+          grep -q "resetRemoteInputStateForDesktopTransition" pwa/app.js
+          grep -q "scheduleSecureCursorProbe" pwa/app.js
+          grep -q "remotePermissions" pwa/app.js
+          node --check pwa/app.js
+          echo CHV_WEB34_VALIDATION_OK
+      - name: Commit generated PWA
+        shell: bash
+        run: |
+          git config user.name 'CHV Remote Bot'
+          git config user.email 'chvsolucoes@users.noreply.github.com'
+          git add pwa/app.js pwa/index.html pwa/sw.js
+          if git diff --cached --quiet; then
+            echo CHV_WEB34_ALREADY_APPLIED
+            exit 0
+          fi
+          git commit -m 'CHV Remote Web 3.4 secure desktop input reset'
+          git push origin HEAD:main

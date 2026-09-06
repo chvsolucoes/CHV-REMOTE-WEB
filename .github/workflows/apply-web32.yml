@@ -1,0 +1,51 @@
+name: Apply CHV Remote Web 3.2 fixes
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'tools/apply_web32.py'
+      - '.github/workflows/apply-web32.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 1
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Apply Web 3.2 patch
+        run: python tools/apply_web32.py
+      - name: Validate Web 3.2
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -q "chv-remote-pwa-v3.2.0" pwa/sw.js
+          grep -q "remotePermissions" pwa/app.js
+          grep -q "web32AudioDefaultsMigrated" pwa/app.js
+          grep -q "scheduleKeyboardReframe" pwa/app.js
+          grep -q "Downloads / CHV Remote" pwa/app.js
+          grep -q "Versão PWA 3.2.0" pwa/index.html
+          if grep -q "openSentFolderBtn" pwa/index.html; then exit 1; fi
+          node --check pwa/app.js
+          echo CHV_WEB32_VALIDATION_OK
+      - name: Commit generated PWA
+        shell: bash
+        run: |
+          git config user.name 'CHV Remote Bot'
+          git config user.email 'chvsolucoes@users.noreply.github.com'
+          git add pwa/app.js pwa/app.css pwa/index.html pwa/sw.js
+          if git diff --cached --quiet; then
+            echo CHV_WEB32_ALREADY_APPLIED
+            exit 0
+          fi
+          git commit -m 'CHV Remote Web 3.2 permissions keyboard and file flow'
+          git push origin HEAD:main

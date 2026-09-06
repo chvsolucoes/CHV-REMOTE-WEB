@@ -18,7 +18,8 @@ const state={
   interactionBurstTimer:null,interactionBurst:false,postInputTimers:[],
   cursorShape:'arrow',cursorEditable:false,cursorNumeric:false,cursorProbeAt:0,
   remotePath:'',remoteParent:'',remoteEntries:[],remoteSelected:new Set(),receivedReady:[],
-  remotePermissions:{audio:true,microphone:true,full_control:true},keyboardReframeTimers:[],keyboardTarget:null
+  remotePermissions:{audio:true,microphone:true,full_control:true},keyboardReframeTimers:[],keyboardTarget:null,
+  secureDesktop:false,portableBlocked:false,secureProbeTimers:[]
 };
 const settings=Object.assign({
   quality:'balanced',savePasswords:false,autoAudio:true,autoMic:true,pointerMode:'mouse'
@@ -215,7 +216,7 @@ function schedulePresence(){
 
 async function connect(){
   const code=cleanId($('#remoteId').value),secret=$('#remotePassword').value;
-  state.remotePermissions={audio:true,microphone:true,full_control:true};
+  state.remotePermissions={audio:true,microphone:true,full_control:true};state.secureDesktop=false;state.portableBlocked=false;clearSecureProbeTimers();
   // connect() originates from a real tap, so resume WebAudio here while iOS still
   // considers it a user gesture. The host permission still decides what is sent.
   try{await ensureAudio()}catch{}
@@ -294,7 +295,11 @@ function handleMessage(e,code,secret,timeout){
       else if(!state.remotePermissions.microphone)setFeature('microphone',false,true);
       return;
     }
-    if(o.type==='secure_attention_result'){toast(o.ok?'Ctrl + Alt + Del executado':'Não foi possível executar Ctrl + Alt + Del neste computador');postInputRefresh('secure_attention_result');return}
+    if(o.type==='secure_attention_result'){
+      toast(o.ok?'Ctrl + Alt + Del executado':'Não foi possível executar Ctrl + Alt + Del neste computador');
+      if(o.ok){resetRemoteInputStateForDesktopTransition();scheduleSecureCursorProbe()}
+      postInputRefresh('secure_attention_result');return
+    }
     if(o.type==='reveal_received_folder_result'){toast(o.ok?'Pasta CHV Remote aberta no computador':'Não foi possível abrir a pasta no computador');return}
     if(o.type==='file_list'){renderRemoteFileList(o);return}
     if(o.type==='file_list_error'){toast('Não foi possível abrir essa pasta no computador');return}
@@ -435,7 +440,7 @@ function scheduleKeyboardReframe(){
   },ms));
 }
 function openKeyboardForCursor(numeric=false,force=false){
-  if(!state.connected)return false;
+  if(!state.connected||state.portableBlocked)return false;
   const likely=force||state.cursorEditable||state.cursorShape==='ibeam';
   if(!likely)return false;
   clearTimeout(state.focusProbeTimer);state.keyboardProbeArmed=true;
@@ -452,7 +457,7 @@ function openKeyboardForCursor(numeric=false,force=false){
   return document.activeElement===input;
 }
 function probeTextFocus(p,alreadyOpened=false){
-  if(!state.connected)return;
+  if(!state.connected||state.portableBlocked)return;
   state.keyboardTarget={x:Math.max(0,Math.min(1,p.x)),y:Math.max(0,Math.min(1,p.y))};
   state.lastFocusProbeAt=Date.now();
   // If the cursor already says I-beam, keep the trusted-gesture focus alive. For
@@ -623,7 +628,7 @@ function renderLists(){
 function disconnect(){
   saveThumbnail(true);
   try{state.ws?.close(1000)}catch{}
-  state.ws=null;state.connected=false;state.currentCode=null;
+  state.ws=null;state.connected=false;state.currentCode=null;state.secureDesktop=false;state.portableBlocked=false;clearSecureProbeTimers();
   $('#remoteScreen').removeAttribute('src');$('#screenPlaceholder').style.display='flex';
   closeEdgeMenu();closeAllSheets();releaseModifiers();
   showView('homeView');setStatus('Pronto para conectar');resetViewTransform();setImmersive(false);updateConnectButton();refreshPresence();
@@ -654,10 +659,34 @@ function normalizeCursorShape(value){
   const aliases={default:'arrow',normal:'arrow',pointer:'hand',link:'hand',hand2:'hand',text:'ibeam',i_beam:'ibeam',beam:'ibeam',busy:'wait',loading:'wait',progress:'appstarting',working:'appstarting',crosshair:'cross',sizewe:'size_we',ew_resize:'size_we',sizens:'size_ns',ns_resize:'size_ns',sizeall:'size_all',move:'size_all'};
   return aliases[raw]||raw;
 }
+function resetRemoteInputStateForDesktopTransition(){
+  if(state.mouseMoveRaf){cancelAnimationFrame(state.mouseMoveRaf);state.mouseMoveRaf=0}
+  state.pendingMouseMove=null;state.pointers.clear();state.gesture=null;state.edgeGesture=null;
+  state.dragging=false;state.doubleTapDrag=false;state.mouseDragArmed=false;state.moved=false;
+  clearLongPress();clearMouseDragArm();
+  state.keyboardProbeArmed=false;state.keyboardTarget=null;clearTimeout(state.focusProbeTimer);
+  const input=$('#nativeKeyboardInput');try{input?.blur()}catch{}
+  // Modifier state must not survive a switch from the user's desktop to Winlogon.
+  // The Windows host also performs a LocalSystem RESETINPUT, so both ends agree.
+  if(state.modifiers.size)releaseModifiers();
+}
+function clearSecureProbeTimers(){for(const t of state.secureProbeTimers)clearTimeout(t);state.secureProbeTimers=[]}
+function scheduleSecureCursorProbe(){
+  clearSecureProbeTimers();
+  for(const ms of [70,160,300,520,850,1250])state.secureProbeTimers.push(setTimeout(()=>{
+    if(state.connected){probeCursorState(true);wsSend({type:'request_frame',reason:'secure_desktop_transition'})}
+  },ms));
+}
 function applyCursorState(o){
   const shape=normalizeCursorShape(o?.shape||'arrow');
-  state.cursorShape=shape;state.cursorEditable=!!(o?.editable||shape==='ibeam');state.cursorNumeric=!!o?.numeric;
-  const c=$('#mouseCursor');c.dataset.shape=shape;c.innerHTML=cursorMarkup(shape);updateCursorVisual();
+  const nextSecure=!!o?.secure_desktop,nextPortable=!!o?.portable_blocked;
+  const changed=nextSecure!==state.secureDesktop||nextPortable!==state.portableBlocked;
+  if(changed)resetRemoteInputStateForDesktopTransition();
+  state.secureDesktop=nextSecure;state.portableBlocked=nextPortable;
+  state.cursorShape=shape;state.cursorEditable=!nextPortable&&!!(o?.editable||shape==='ibeam');state.cursorNumeric=!!o?.numeric;
+  if(nextPortable){state.cursorShape='arrow';state.cursorEditable=false}
+  const c=$('#mouseCursor');c.dataset.shape=state.cursorShape;c.innerHTML=cursorMarkup(state.cursorShape);updateCursorVisual();
+  if(changed&&nextSecure)scheduleSecureCursorProbe();
 }
 function probeCursorState(force=false){
   if(!state.connected||settings.pointerMode!=='mouse')return;
@@ -723,10 +752,10 @@ function pointerDown(e){
   if(state.pointers.size>2)return;
   state.lastPointer={x:e.clientX,y:e.clientY,time:now};
   if(settings.pointerMode==='mouse'){
-    // Prime the phone keyboard on pointer-down while Safari still treats this as a
-    // user gesture. It is harmless for non-editable targets because it only runs
-    // when the host's live cursor is already an I-beam/editable cursor.
-    if(state.cursorEditable||state.cursorShape==='ibeam')openKeyboardForCursor(state.cursorNumeric);
+    // Prime Safari only from the CURRENT desktop's live cursor state. Desktop
+    // transitions reset cursorEditable/keyboard state so Ctrl+Alt+Del cannot leave
+    // the controller stuck permanently in text-entry mode.
+    if(!state.portableBlocked&&(state.cursorEditable||state.cursorShape==='ibeam'))openKeyboardForCursor(state.cursorNumeric);
     const lp=state.lastTapPos;
     const doubleTap=!!lp&&now-state.lastTapAt<=420&&Math.hypot(e.clientX-lp.x,e.clientY-lp.y)<=38;
     if(doubleTap){

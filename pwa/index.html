@@ -64,13 +64,13 @@
           <label>Qualidade da imagem</label>
           <select id="quality"><option value="balanced">Equilibrada</option><option value="quality">Alta qualidade</option><option value="speed">Maior velocidade</option></select>
           <div class="setting-row"><div><strong>Salvar senhas</strong><small>Armazena somente neste dispositivo</small></div><input id="savePasswords" type="checkbox"></div>
-          <div class="setting-row"><div><strong>Áudio do sistema</strong><small>Ativar automaticamente ao conectar</small></div><input id="autoAudio" type="checkbox"></div>
-          <div class="setting-row"><div><strong>Microfone remoto</strong><small>Ouvir o microfone do computador remoto</small></div><input id="autoMic" type="checkbox"></div>
+          <div class="setting-row"><div><strong>Áudio do sistema</strong><small>Ativo automaticamente quando o computador remoto permitir</small></div><input id="autoAudio" type="checkbox"></div>
+          <div class="setting-row"><div><strong>Microfone remoto</strong><small>Ativo automaticamente quando o computador remoto permitir</small></div><input id="autoMic" type="checkbox"></div>
           <div class="setting-row"><div><strong>Modo de controle padrão</strong><small>Mouse mostra a seta; Touch controla diretamente</small></div>
             <select id="pointerMode"><option value="mouse">Mouse</option><option value="touch">Touch Screen</option></select>
           </div>
         </div>
-        <div class="card about"><strong>CHV Remote Web App</strong><p>Versão PWA 3.0.0 • conexão via CHV Relay • teclado e transferências móveis otimizados.</p></div>
+        <div class="card about"><strong>CHV Remote Web App</strong><p>Versão PWA 3.2.0 • conexão via CHV Relay • teclado e transferências móveis otimizados.</p></div>
       </section>
 
       <section id="sessionView" class="view session-view">
@@ -181,8 +181,8 @@
     <div id="sentFileSheet" class="sheet hidden">
       <div class="sheet-card sent-file-card">
         <div class="sheet-head"><div><strong>Arquivo enviado</strong><small id="sentFileName">CHV Remote</small></div></div>
-        <p>Transferência concluída. O arquivo foi enviado para <b>Downloads / CHV Remote</b> no computador remoto.</p>
-        <div class="sent-file-actions"><button id="closeSentFileBtn" class="secondary">OK</button><button id="openSentFolderBtn" class="primary">Abrir pasta no PC</button></div>
+        <p>Arquivo enviado com sucesso para a pasta <b>Downloads / CHV Remote</b> do computador remoto.</p>
+        <div class="sent-file-actions one-action"><button id="closeSentFileBtn" class="primary">OK</button></div>
       </div>
     </div>
 

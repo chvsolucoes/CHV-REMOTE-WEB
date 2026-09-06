@@ -228,7 +228,11 @@ body.session-active #screenWrap{touch-action:none!important;cursor:default!impor
 .remote-cursor[data-shape="arrow"]{width:30px;height:40px;transform:translate(-3px,-3px)}
 
 /* CHV Remote Web 3.0 keyboard viewport */
-.session-view.keyboard-visible{inset:var(--keyboard-top,0px) 0 auto;height:var(--keyboard-vh,100dvh)!important;min-height:var(--keyboard-vh,100dvh)!important}
-.session-view.keyboard-visible .screen-wrap{height:calc(var(--keyboard-vh,100dvh) - 58px)!important}
+.session-view.keyboard-visible{top:var(--keyboard-offset,0px)!important;bottom:auto!important;height:var(--keyboard-vh,100dvh)!important;min-height:var(--keyboard-vh,100dvh)!important;overflow:hidden!important}
+.session-view.keyboard-visible .screen-wrap{height:calc(var(--keyboard-vh,100dvh) - 58px)!important;max-height:calc(var(--keyboard-vh,100dvh) - 58px)!important}
 .sent-file-card p{font-size:14px;line-height:1.5;color:var(--muted);margin:4px 0 14px}
 .sent-file-actions{display:flex;gap:10px}.sent-file-actions .secondary,.sent-file-actions .primary{flex:1;margin-top:0}
+
+/* CHV Remote Web 3.2 */
+.edge-bubble:disabled{opacity:.35;filter:grayscale(1)}
+.sent-file-actions.one-action{display:block}.sent-file-actions.one-action .primary{width:100%}

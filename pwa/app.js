@@ -17,11 +17,17 @@ const state={
   lastTapAt:0,lastTapPos:null,doubleTapDrag:false,focusProbeTimer:null,keyboardProbeArmed:false,
   interactionBurstTimer:null,interactionBurst:false,postInputTimers:[],
   cursorShape:'arrow',cursorEditable:false,cursorNumeric:false,cursorProbeAt:0,
-  remotePath:'',remoteParent:'',remoteEntries:[],remoteSelected:new Set(),receivedReady:[]
+  remotePath:'',remoteParent:'',remoteEntries:[],remoteSelected:new Set(),receivedReady:[],
+  remotePermissions:{audio:true,microphone:true,full_control:true},keyboardReframeTimers:[]
 };
 const settings=Object.assign({
-  quality:'balanced',savePasswords:false,autoAudio:false,autoMic:false,pointerMode:'mouse'
+  quality:'balanced',savePasswords:false,autoAudio:true,autoMic:true,pointerMode:'mouse'
 },store.get('settings',{}));
+// WEB32 changes the connection default to audio + remote microphone enabled.
+// Migrate existing installs once; afterwards the user's manual choice is preserved.
+if(!store.get('web32AudioDefaultsMigrated',false)){
+  settings.autoAudio=true;settings.autoMic=true;store.set('settings',settings);store.set('web32AudioDefaultsMigrated',true);
+}
 let favorites=store.get('favorites',[]);
 let history=store.get('history',[]);
 let thumbnails=store.get('thumbnails',{});
@@ -209,6 +215,10 @@ function schedulePresence(){
 
 async function connect(){
   const code=cleanId($('#remoteId').value),secret=$('#remotePassword').value;
+  state.remotePermissions={audio:true,microphone:true,full_control:true};
+  // connect() originates from a real tap, so resume WebAudio here while iOS still
+  // considers it a user gesture. The host permission still decides what is sent.
+  try{await ensureAudio()}catch{}
   if(code.length!==6||secret.length<4)return toast('Informe o ID de 6 dígitos e a senha.');
   if(!state.relayOnline){
     const ok=await refreshRelayHealth();
@@ -252,8 +262,10 @@ function handleMessage(e,code,secret,timeout){
       state.onlineCodes.add(code);setStatus('Conectado');state.currentCode=code;
       sendAdaptiveStreamProfile('connect');setTimeout(requestSharpFrame,160);
       saveConnection(code,secret);
-      if(settings.autoAudio)setFeature('system_audio',true);
-      if(settings.autoMic)setFeature('microphone',true);
+      $('#actionAudioBtn')?.classList.toggle('active',!!settings.autoAudio);
+      $('#actionMicBtn')?.classList.toggle('active',!!settings.autoMic);
+      if(settings.autoAudio)ensureAudio().then(()=>setFeature('system_audio',true)).catch(()=>{});
+      if(settings.autoMic)ensureAudio().then(()=>setFeature('microphone',true)).catch(()=>{});
       applyPointerMode(settings.pointerMode);applyCursorState({shape:'arrow',editable:false});setTimeout(()=>probeCursorState(true),120);renderLists();renderCurrentPcStatus();
       return;
     }
@@ -267,6 +279,21 @@ function handleMessage(e,code,secret,timeout){
       return;
     }
     if(o.type==='cursor_state'){applyCursorState(o);return}
+    if(o.type==='permission_state'){
+      state.remotePermissions={
+        audio:o.audio!==false,
+        microphone:o.microphone!==false,
+        full_control:o.full_control!==false&&o.elevated!==false
+      };
+      const ab=$('#actionAudioBtn'),mb=$('#actionMicBtn');
+      if(ab){ab.disabled=!state.remotePermissions.audio;ab.classList.toggle('active',state.remotePermissions.audio&&!!settings.autoAudio)}
+      if(mb){mb.disabled=!state.remotePermissions.microphone;mb.classList.toggle('active',state.remotePermissions.microphone&&!!settings.autoMic)}
+      if(state.remotePermissions.audio&&settings.autoAudio)ensureAudio().then(()=>setFeature('system_audio',true)).catch(()=>{});
+      else if(!state.remotePermissions.audio)setFeature('system_audio',false,true);
+      if(state.remotePermissions.microphone&&settings.autoMic)ensureAudio().then(()=>setFeature('microphone',true)).catch(()=>{});
+      else if(!state.remotePermissions.microphone)setFeature('microphone',false,true);
+      return;
+    }
     if(o.type==='secure_attention_result'){toast(o.ok?'Ctrl + Alt + Del executado':'Não foi possível executar Ctrl + Alt + Del neste computador');postInputRefresh('secure_attention_result');return}
     if(o.type==='reveal_received_folder_result'){toast(o.ok?'Pasta CHV Remote aberta no computador':'Não foi possível abrir a pasta no computador');return}
     if(o.type==='file_list'){renderRemoteFileList(o);return}
@@ -371,30 +398,39 @@ function syncKeyboardViewport(){
   session.classList.toggle('keyboard-visible',open);
   if(open){
     session.style.setProperty('--keyboard-vh',Math.max(260,vv.height)+'px');
-    session.style.setProperty('--keyboard-top',Math.max(0,vv.offsetTop)+'px');
+    session.style.setProperty('--keyboard-offset',Math.max(0,vv.offsetTop)+'px');
   }else{
-    session.style.removeProperty('--keyboard-vh');session.style.removeProperty('--keyboard-top');
+    session.style.removeProperty('--keyboard-vh');session.style.removeProperty('--keyboard-offset');
   }
   return open;
 }
+function clearKeyboardReframeTimers(){for(const t of state.keyboardReframeTimers)clearTimeout(t);state.keyboardReframeTimers=[]}
 function focusRemoteFieldView(){
   if(!state.connected)return;
   syncKeyboardViewport();
-  if(state.zoom<1.55)state.zoom=1.55;
+  const wr=$('#screenWrap').getBoundingClientRect();
+  if(wr.height<100)return;
+  const vv=window.visualViewport;
+  const compact=vv&&vv.height<window.innerHeight*.72;
+  const minZoom=compact?2.05:1.72;
+  if(state.zoom<minZoom)state.zoom=minZoom;
   const f=fitImageBase(),scaledW=f.width*state.zoom,scaledH=f.height*state.zoom;
-  const wr=$('#screenWrap').getBoundingClientRect(),vv=window.visualViewport;
-  const visibleTop=vv?Math.max(wr.top,vv.offsetTop):wr.top;
-  const visibleBottom=vv?Math.min(wr.bottom,vv.offsetTop+vv.height):wr.bottom;
-  const visibleH=Math.max(120,visibleBottom-visibleTop);
-  // Keep the remote insertion point around the upper-middle of the area that is
-  // actually visible above the phone keyboard, not the hidden 100dvh layout.
-  const desiredClientY=visibleTop+Math.max(54,Math.min(visibleH*.38,220));
-  const currentClientY=wr.top+wr.height/2+state.panY+(state.cursor.y-.5)*scaledH;
-  state.panY+=desiredClientY-currentClientY;
-  const desiredClientX=wr.left+wr.width*.5;
-  const currentClientX=wr.left+wr.width/2+state.panX+(state.cursor.x-.5)*scaledW;
-  if(currentClientX<wr.left+wr.width*.14||currentClientX>wr.right-wr.width*.14)state.panX+=desiredClientX-currentClientX;
+  // Work in screenWrap-local coordinates. Desired Y is deliberately high so the
+  // caret/password field and the following line remain visible above the keyboard.
+  const targetY=Math.max(54,Math.min(wr.height*.30,168));
+  const cursorY=wr.height/2+state.panY+(state.cursor.y-.5)*scaledH;
+  state.panY+=targetY-cursorY;
+  const leftGuard=Math.max(48,wr.width*.16),rightGuard=wr.width-leftGuard;
+  const cursorX=wr.width/2+state.panX+(state.cursor.x-.5)*scaledW;
+  if(cursorX<leftGuard)state.panX+=leftGuard-cursorX;
+  else if(cursorX>rightGuard)state.panX-=cursorX-rightGuard;
   clampPan();applyTransform();requestSharpFrame();
+}
+function scheduleKeyboardReframe(){
+  clearKeyboardReframeTimers();
+  for(const ms of [0,55,140,260,420])state.keyboardReframeTimers.push(setTimeout(()=>{
+    if(state.connected&&document.activeElement===$('#nativeKeyboardInput'))focusRemoteFieldView();
+  },ms));
 }
 function openKeyboardForCursor(numeric=false,force=false){
   if(!state.connected)return false;
@@ -406,7 +442,7 @@ function openKeyboardForCursor(numeric=false,force=false){
   // Must run in pointerdown/up from the physical touch. This is what makes the
   // native iPhone/Android keyboard appear reliably instead of waiting on the host.
   try{input.focus({preventScroll:true});input.setSelectionRange(0,0)}catch{}
-  focusRemoteFieldView();
+  focusRemoteFieldView();scheduleKeyboardReframe();
   state.focusProbeTimer=setTimeout(()=>{
     if(!state.keyboardProbeArmed)return;
     state.keyboardProbeArmed=false;try{input.blur()}catch{}
@@ -426,7 +462,7 @@ function resolveTextFocus(editable,numeric=false){
   const input=$('#nativeKeyboardInput');
   if(!editable){state.keyboardProbeArmed=false;if(state.cursorShape==='ibeam')applyCursorState({shape:'arrow',editable:false});try{input.blur()}catch{};return}
   state.keyboardProbeArmed=false;state.cursorEditable=true;state.cursorNumeric=!!numeric;applyCursorState({shape:'ibeam',editable:true,numeric:!!numeric});
-  focusRemoteFieldView();
+  focusRemoteFieldView();scheduleKeyboardReframe();
   input.setAttribute('inputmode',numeric?'numeric':'text');input.value='';
   try{input.blur();input.focus({preventScroll:true});input.setSelectionRange(0,0)}catch{}
 }
@@ -440,8 +476,10 @@ function sendCtrlAltDel(){
   postInputRefresh('secure_attention');
   toast('Solicitando Ctrl + Alt + Del ao computador remoto…');
 }
-function setFeature(feature,enabled){
-  if(!state.canAdmin){toast('Esse recurso foi bloqueado pelo computador remoto');return false}
+function setFeature(feature,enabled,silent=false){
+  if(!state.canAdmin){if(!silent)toast('Esse recurso foi bloqueado pelo computador remoto');return false}
+  if(enabled&&feature==='system_audio'&&!state.remotePermissions.audio){if(!silent)toast('O áudio não foi liberado nas configurações do computador remoto');return false}
+  if(enabled&&feature==='microphone'&&!state.remotePermissions.microphone){if(!silent)toast('O microfone não foi liberado nas configurações do computador remoto');return false}
   wsSend({type:'feature',feature,enabled});
   if(feature==='system_audio')wsSend({type:enabled?'audio_start':'audio_stop'});
   if(feature==='microphone'){
@@ -933,7 +971,7 @@ async function sendFiles(files){
   }
   // The file picker/browser must never strand the user away from the remote
   // desktop. Close it immediately and show one focused completion prompt.
-  closeAllSheets();closeEdgeMenu();
+  closeAllSheets();closeEdgeMenu();showView('sessionView');
   $('#sentFileName').textContent=names.length===1?names[0]:names.length+' arquivos';
   $('#sentFileSheet').classList.remove('hidden');
   toast('Arquivo enviado para Downloads / CHV Remote');
@@ -961,6 +999,8 @@ $('#sessionQuality').value=settings.quality;
 ['quality','autoAudio','autoMic'].forEach(id=>$('#'+id).onchange=e=>{
   settings[id]=e.target.type==='checkbox'?e.target.checked:e.target.value;store.set('settings',settings);
   if(id==='quality'){$('#sessionQuality').value=settings.quality;requestSharpFrame()}
+  if(state.connected&&id==='autoAudio'){const on=!!settings.autoAudio&&state.remotePermissions.audio;$('#actionAudioBtn')?.classList.toggle('active',on);if(on)ensureAudio().then(()=>setFeature('system_audio',true));else setFeature('system_audio',false,true)}
+  if(state.connected&&id==='autoMic'){const on=!!settings.autoMic&&state.remotePermissions.microphone;$('#actionMicBtn')?.classList.toggle('active',on);if(on)ensureAudio().then(()=>setFeature('microphone',true));else setFeature('microphone',false,true)}
 });
 $('#savePasswords').onchange=e=>{
   settings.savePasswords=e.target.checked;store.set('settings',settings);
@@ -1005,8 +1045,7 @@ $$('[data-chord]').forEach(b=>b.onclick=()=>{chord(b.dataset.chord);$('#ctrlShor
 
 $('#fileInput').onchange=e=>{sendFiles([...e.target.files]);e.target.value=''};
 $('#sendFromPhoneBtn').onclick=()=>$('#fileInput').click();
-$('#closeSentFileBtn').onclick=()=>{$('#sentFileSheet').classList.add('hidden');toast('Arquivo enviado para o computador remoto')};
-$('#openSentFolderBtn').onclick=()=>{wsSend({type:'reveal_received_folder_request'});$('#sentFileSheet').classList.add('hidden');toast('Abrindo Downloads / CHV Remote no PC…')};
+$('#closeSentFileBtn').onclick=()=>{closeAllSheets();showView('sessionView');$('#screenWrap')?.focus?.();toast('Arquivo enviado para Downloads / CHV Remote')};
 $('#receiveSelectedBtn').onclick=receiveSelectedFiles;
 $('#remoteUpBtn').onclick=()=>requestRemotePath(state.remoteParent||'');
 $('#refreshRemoteFilesBtn').onclick=()=>requestRemotePath(state.remotePath||'');
@@ -1053,7 +1092,7 @@ if(window.visualViewport){
   const updateVV=()=>{
     clearTimeout(vvTimer);vvTimer=setTimeout(()=>{
       syncKeyboardViewport();
-      if(state.connected&&document.activeElement===$('#nativeKeyboardInput')&&(state.cursorEditable||state.cursorShape==='ibeam'))requestAnimationFrame(focusRemoteFieldView);
+      if(state.connected&&document.activeElement===$('#nativeKeyboardInput')&&(state.cursorEditable||state.cursorShape==='ibeam'))scheduleKeyboardReframe();
     },20);
   };
   window.visualViewport.addEventListener('resize',updateVV);

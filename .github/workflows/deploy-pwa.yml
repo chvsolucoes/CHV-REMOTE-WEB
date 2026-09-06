@@ -38,7 +38,7 @@ jobs:
           for f in index.html app.js app.css sw.js manifest.webmanifest icon.svg icon-180.png; do
             cp "source/pwa/$f" "publish/$f"
           done
-          grep -q "chv-remote-pwa-v3.3.0" publish/sw.js
+          grep -Eq "chv-remote-pwa-v3\.(3|4)\.0" publish/sw.js
           if grep -Fq "setAttribute('inputmode','none')" publish/app.js; then
             echo 'mobile keyboard suppression still present'
             exit 1
@@ -52,7 +52,7 @@ jobs:
           grep -q "web32AudioDefaultsMigrated" publish/app.js
           grep -q "sentFileSheet" publish/index.html
           grep -q "fps:38" publish/app.js
-          echo CHV_WEB33_PUBLISH_PAYLOAD_OK
+          echo CHV_PWA_PUBLISH_PAYLOAD_OK
       - name: Publish PWA
         shell: bash
         working-directory: publish
@@ -62,8 +62,8 @@ jobs:
           git config user.email 'chvsolucoes@users.noreply.github.com'
           git add index.html app.js app.css sw.js manifest.webmanifest icon.svg icon-180.png
           if git diff --cached --quiet; then
-            echo CHV_WEB33_ALREADY_PUBLISHED
+            echo CHV_PWA_ALREADY_PUBLISHED
             exit 0
           fi
-          git commit -m 'Publish CHV Remote Web 3.3 mobile keyboard framing'
+          git commit -m 'Publish current CHV Remote Web PWA'
           git push origin HEAD:gh-pages
